@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import shutil
 
 import discord
 from discord.ext import commands
@@ -68,6 +69,16 @@ async def on_command_error(ctx, error):
 async def main():
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN is not set. Add it to your .env or Railway environment variables.")
+
+    if shutil.which("ffmpeg") is None:
+        log.warning(
+            "ffmpeg was not found on PATH -- /play will fail with 'ffmpeg was not found' until this is fixed. "
+            "On Railway this means the aptPkgs/nixPkgs entry in nixpacks.toml isn't being picked up (often a "
+            "stale build cache) -- try a fresh deploy with the build cache cleared. Locally: apt install ffmpeg "
+            "/ brew install ffmpeg."
+        )
+    else:
+        log.info(f"ffmpeg found at {shutil.which('ffmpeg')}")
 
     init_db()
 
