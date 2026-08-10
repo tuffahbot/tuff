@@ -35,10 +35,10 @@ LEVEL_PERK_DESCRIPTIONS = {
 }
 
 LEVEL_COLORS = {
-    5: discord.Color.light_gray(),
+    5: discord.Color.blue(),
     10: discord.Color.green(),
-    25: discord.Color.blue(),
-    50: discord.Color.gold(),
+    25: discord.Color.gold(),
+    50: discord.Color.orange(),
 }
 
 XP_MIN, XP_MAX = 15, 25       # xp awarded per eligible message
