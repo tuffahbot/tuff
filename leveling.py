@@ -35,19 +35,21 @@ LEVEL_PERK_DESCRIPTIONS = {
 }
 
 LEVEL_COLORS = {
-    5: discord.Color.blue(),
+    5: discord.Color.light_gray(),
     10: discord.Color.green(),
-    25: discord.Color.gold(),
-    50: discord.Color.orange(),
+    25: discord.Color.blue(),
+    50: discord.Color.gold(),
 }
 
-XP_MIN, XP_MAX = 15, 25       # xp awarded per eligible message
-XP_COOLDOWN_SECONDS = 45      # per-user cooldown to prevent spam-leveling
+XP_MIN, XP_MAX = 8, 15        # xp awarded per eligible message (was 15-25)
+XP_COOLDOWN_SECONDS = 90      # per-user cooldown to prevent spam-leveling (was 60)
 
 
 def xp_for_level(level: int) -> int:
-    """Total cumulative XP required to reach `level`. Standard MEE6-style curve."""
-    return 5 * (level ** 2) + 50 * level + 100
+    """Total cumulative XP required to reach `level`. Roughly 2x the old
+    MEE6-style curve, on top of the lower per-message XP above -- leveling
+    is noticeably slower end-to-end now."""
+    return 10 * (level ** 2) + 100 * level + 200
 
 
 def level_from_xp(xp: int) -> int:
@@ -111,7 +113,7 @@ class Leveling(commands.Cog):
             await self._handle_level_up(message, new_level)
 
     async def _handle_level_up(self, message: discord.Message, new_level: int):
-        perk_line = ""
+        role_unlocked = None
         role_name = LEVEL_ROLES.get(new_level)
         if role_name:
             role = discord.utils.get(message.guild.roles, name=role_name)
@@ -119,18 +121,39 @@ class Leveling(commands.Cog):
             if role and me.guild_permissions.manage_roles and role < me.top_role:
                 try:
                     await message.author.add_roles(role, reason=f"Reached level {new_level}")
-                    perks = LEVEL_PERK_DESCRIPTIONS.get(new_level)
-                    perk_line = f"\n\n🔓 Unlocked **{role.name}**" + (f" — {perks}" if perks else "") + "!"
+                    role_unlocked = role
                 except discord.Forbidden:
                     pass
 
+        xp, _ = db.get_user_xp(message.guild.id, message.author.id)
+        current_floor = xp_for_level(new_level)
+        next_floor = xp_for_level(new_level + 1)
+        progress = xp - current_floor
+        needed = next_floor - current_floor
+        bar_filled = int((progress / needed) * 12) if needed else 0
+        bar = "🟩" * bar_filled + "⬛" * (12 - bar_filled)
+
         embed = discord.Embed(
-            title="🎉 Level Up!",
-            description=f"You reached **level {new_level}** in **{message.guild.name}**!{perk_line}",
+            title=f"🎉 Level {new_level}!",
+            description=f"You leveled up in **{message.guild.name}**!",
             color=LEVEL_COLORS.get(new_level, discord.Color.gold()),
+            timestamp=discord.utils.utcnow(),
         )
+        embed.set_thumbnail(url=message.author.display_avatar.url)
+        embed.add_field(name="Total XP", value=f"{xp:,}", inline=True)
+        embed.add_field(name="Progress to Next Level", value=f"{progress:,} / {needed:,}", inline=True)
+        embed.add_field(name="\u200b", value=bar, inline=False)
+        if role_unlocked:
+            perks = LEVEL_PERK_DESCRIPTIONS.get(new_level)
+            embed.add_field(
+                name=f"🔓 Unlocked: {role_unlocked.name}",
+                value=perks or "New role!",
+                inline=False,
+            )
         if message.guild.icon:
-            embed.set_thumbnail(url=message.guild.icon.url)
+            embed.set_footer(text=message.guild.name, icon_url=message.guild.icon.url)
+        else:
+            embed.set_footer(text=message.guild.name)
 
         try:
             await message.author.send(embed=embed)
