@@ -142,15 +142,23 @@ class VoiceControlView(discord.ui.View):
             return
         await interaction.response.send_modal(LimitModal(channel))
 
-    @discord.ui.button(label="Lock/Unlock", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="voice_lock", row=0)
+    @discord.ui.button(label="Lock", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="voice_lock", row=0)
     async def lock(self, interaction: discord.Interaction, button: discord.ui.Button):
         channel = self._get_channel(interaction)
         if not channel or not await self._require_owner(interaction, channel):
             return
         everyone = channel.guild.default_role
-        currently_locked = channel.overwrites_for(everyone).connect is False
-        await channel.set_permissions(everyone, connect=None if currently_locked else False, reason=f"Toggled by {interaction.user}")
-        await interaction.response.send_message("🔓 Unlocked." if currently_locked else "🔒 Locked.", ephemeral=True)
+        await channel.set_permissions(everyone, connect=False, reason=f"Locked by {interaction.user}")
+        await interaction.response.send_message("🔒 Locked.", ephemeral=True)
+
+    @discord.ui.button(label="Unlock", emoji="🔓", style=discord.ButtonStyle.success, custom_id="voice_unlock", row=0)
+    async def unlock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = self._get_channel(interaction)
+        if not channel or not await self._require_owner(interaction, channel):
+            return
+        everyone = channel.guild.default_role
+        await channel.set_permissions(everyone, connect=None, reason=f"Unlocked by {interaction.user}")
+        await interaction.response.send_message("🔓 Unlocked.", ephemeral=True)
 
     @discord.ui.button(label="Kick", emoji="👢", style=discord.ButtonStyle.secondary, custom_id="voice_kick", row=1)
     async def kick(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -205,17 +213,12 @@ class VoiceControlView(discord.ui.View):
         await interaction.response.send_message("🛡️ You're now the owner of this channel.", ephemeral=True)
 
 
-def control_panel_embed(owner: discord.Member) -> discord.Embed:
-    embed = discord.Embed(
-        title="Voice controls",
-        description=(
-            f"owner: {owner.mention}\n\n"
-            "*Rename · Limit · Lock/Unlock · Kick (disconnect) · Permit (allow into a locked channel) · "
-            "Block (ban from the channel) · Transfer · Claim (if owner has gone)*"
-        ),
-        color=discord.Color.blurple(),
+def control_panel_text(owner: discord.Member) -> str:
+    return (
+        f"**Voice controls** · owner 🎙️ {owner.mention}\n"
+        "*Rename · Limit · Lock/Unlock · Kick (disconnect) · Permit (allow into a locked channel) · "
+        "Block (ban from the channel) · Transfer · Claim (if owner is gone)*"
     )
-    return embed
 
 
 class JoinToCreate(commands.Cog):
@@ -246,7 +249,7 @@ class JoinToCreate(commands.Cog):
                 await member.move_to(new_channel, reason="Join-to-create")
                 self.temp_channels[new_channel.id] = member.id
                 try:
-                    await new_channel.send(embed=control_panel_embed(member), view=VoiceControlView())
+                    await new_channel.send(content=control_panel_text(member), view=VoiceControlView())
                 except discord.Forbidden:
                     pass
             except discord.Forbidden:
