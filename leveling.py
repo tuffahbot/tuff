@@ -42,7 +42,7 @@ LEVEL_COLORS = {
 }
 
 XP_MIN, XP_MAX = 15, 25       # xp awarded per eligible message
-XP_COOLDOWN_SECONDS = 60      # per-user cooldown to prevent spam-leveling
+XP_COOLDOWN_SECONDS = 45      # per-user cooldown to prevent spam-leveling
 
 
 def xp_for_level(level: int) -> int:
