@@ -2,6 +2,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+# Only this Discord user ID can use /say.
+AUTHORIZED_SAY_USER_ID = 1503282641221320815
+
 HELP_SECTIONS = {
     "🎵 Music": [
         "/play <query> — play a song by name or URL",
@@ -50,6 +53,25 @@ class General(commands.Cog):
         for section, lines in HELP_SECTIONS.items():
             embed.add_field(name=section, value="\n".join(lines), inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="say", description="Make the bot say something")
+    @app_commands.describe(message="What to say", channel="Where to say it (defaults to this channel)")
+    async def say(self, interaction: discord.Interaction, message: str, channel: discord.TextChannel = None):
+        if interaction.user.id != AUTHORIZED_SAY_USER_ID:
+            await interaction.response.send_message("You can't use this command.", ephemeral=True)
+            return
+
+        target = channel or interaction.channel
+        try:
+            await target.send(message)
+        except discord.Forbidden:
+            await interaction.response.send_message(f"I don't have permission to send messages in {target.mention}.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"Sent in {target.mention}.", ephemeral=True)
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if not interaction.response.is_done():
+            await interaction.response.send_message(f"Error: {error}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
