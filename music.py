@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import os
+import random
 import re
 
 import discord
@@ -112,11 +113,14 @@ async def resolve_spotify_queries(url: str, loop: asyncio.AbstractEventLoop) -> 
 
     return await loop.run_in_executor(None, _fetch)
 
+
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTS)
 
 
 class Song:
-    def __init__(self, source_url: str, title: str, webpage_url: str, duration: int, requester: discord.Member, source: str = "youtube", http_headers: dict | None = None):
+    def __init__(self, source_url: str, title: str, webpage_url: str, duration: int, requester: discord.Member,
+                 source: str = "youtube", http_headers: dict | None = None, video_id: str | None = None,
+                 autoplay: bool = False):
         self.source_url = source_url
         self.title = title
         self.webpage_url = webpage_url
@@ -124,6 +128,8 @@ class Song:
         self.requester = requester
         self.source = source
         self.http_headers = http_headers or {}
+        self.video_id = video_id
+        self.autoplay = autoplay  # True if this song was picked by autoplay, not requested by anyone
 
     @staticmethod
     def _is_url(query: str) -> bool:
@@ -161,6 +167,7 @@ class Song:
             # or YouTube's CDN will often 403/throttle it -- which fails
             # completely silently from Discord's side (see play_next below).
             http_headers=data.get("http_headers"),
+            video_id=data.get("id") if source == "youtube" else None,
         )
 
     def format_duration(self) -> str:
@@ -181,6 +188,109 @@ def _ffmpeg_opts_for(song: Song) -> dict:
     return opts
 
 
+async def find_autoplay_song(last_song: Song, loop: asyncio.AbstractEventLoop) -> Song | None:
+    """Finds a related track using YouTube's own auto-generated 'Mix' playlist
+    for whatever just finished, so autoplay stays roughly on-genre instead of
+    picking something totally unrelated. Returns None if there's nothing to
+    go on (e.g. the last song came from SoundCloud) or nothing was found."""
+    if last_song.source != "youtube" or not last_song.video_id:
+        return None
+
+    mix_url = f"https://www.youtube.com/watch?v={last_song.video_id}&list=RD{last_song.video_id}"
+
+    def _fetch_candidates():
+        opts = dict(YTDL_OPTS)
+        opts["noplaylist"] = False
+        opts["extract_flat"] = True  # just get id/title per entry, don't fully resolve every one
+        with yt_dlp.YoutubeDL(opts) as mix_ydl:
+            data = mix_ydl.extract_info(mix_url, download=False)
+            entries = [e for e in (data.get("entries") or []) if e and e.get("id") and e["id"] != last_song.video_id]
+            return entries[:15]
+
+    try:
+        candidates = await loop.run_in_executor(None, _fetch_candidates)
+    except Exception:
+        return None
+    if not candidates:
+        return None
+
+    pick = random.choice(candidates)
+    video_url = f"https://www.youtube.com/watch?v={pick['id']}"
+    try:
+        song = await Song.from_query(video_url, last_song.requester, loop)
+    except Exception:
+        return None
+    song.autoplay = True
+    return song
+
+
+class MusicControlView(discord.ui.View):
+    """Persistent panel attached to each 'Now Playing' message."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    def _get_state(self, interaction: discord.Interaction) -> "GuildMusicState | None":
+        cog = interaction.client.get_cog("Music")
+        return cog.get_state(interaction.guild) if cog else None
+
+    @discord.ui.button(emoji="⏯️", label="Pause/Resume", style=discord.ButtonStyle.secondary, custom_id="music_pauseresume")
+    async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self._get_state(interaction)
+        if not state or not state.voice_client:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+        if state.voice_client.is_playing():
+            state.voice_client.pause()
+            await interaction.response.send_message("⏸️ Paused.", ephemeral=True)
+        elif state.voice_client.is_paused():
+            state.voice_client.resume()
+            await interaction.response.send_message("▶️ Resumed.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+
+    @discord.ui.button(emoji="⏭️", label="Skip", style=discord.ButtonStyle.secondary, custom_id="music_skip")
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self._get_state(interaction)
+        if state and state.voice_client and (state.voice_client.is_playing() or state.voice_client.is_paused()):
+            state.voice_client.stop()  # triggers play_next via the 'after' callback
+            await interaction.response.send_message("⏭️ Skipped.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Nothing to skip.", ephemeral=True)
+
+    @discord.ui.button(emoji="⏹️", label="Stop", style=discord.ButtonStyle.danger, custom_id="music_stop")
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self._get_state(interaction)
+        if not state:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+        state.queue.clear()
+        state.loop_song = False
+        state.current = None  # clear first so autoplay doesn't immediately kick back in
+        if state.voice_client:
+            state.voice_client.stop()
+        await interaction.response.send_message("⏹️ Stopped and cleared the queue.", ephemeral=True)
+
+    @discord.ui.button(emoji="📜", label="Queue", style=discord.ButtonStyle.secondary, custom_id="music_queue")
+    async def show_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self._get_state(interaction)
+        if not state or (not state.current and not state.queue):
+            await interaction.response.send_message("The queue is empty.", ephemeral=True)
+            return
+        embed = discord.Embed(title="🎵 Music Queue", color=discord.Color.green())
+        if state.current:
+            who = "🔀 Autoplay" if state.current.autoplay else state.current.requester.mention
+            embed.add_field(name="Now Playing", value=f"**{state.current.title}** ({state.current.format_duration()}) — {who}", inline=False)
+        if state.queue:
+            lines = [
+                f"{i}. {s.title} ({s.format_duration()}) — {'🔀 Autoplay' if s.autoplay else s.requester.mention}"
+                for i, s in enumerate(state.queue[:10], start=1)
+            ]
+            embed.add_field(name="Up Next", value="\n".join(lines), inline=False)
+            if len(state.queue) > 10:
+                embed.set_footer(text=f"...and {len(state.queue) - 10} more")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 class GuildMusicState:
     def __init__(self, bot: commands.Bot, guild: discord.Guild):
         self.bot = bot
@@ -190,7 +300,8 @@ class GuildMusicState:
         self.current: Song | None = None
         self.volume = 0.5
         self.loop_song = False
-        self.text_channel: discord.abc.Messageable | None = None  # set by /play, used to report errors
+        self.autoplay = True  # keep playing related songs once the queue runs out
+        self.text_channel: discord.abc.Messageable | None = None  # set by /play, used for announcements/errors
 
     def play_next(self, error=None):
         if error:
@@ -207,6 +318,9 @@ class GuildMusicState:
             self.queue.insert(0, self.current)
 
         if not self.queue:
+            if self.autoplay and self.current:
+                asyncio.run_coroutine_threadsafe(self._autoplay_next(), self.bot.loop)
+                return
             self.current = None
             return
 
@@ -215,6 +329,54 @@ class GuildMusicState:
             discord.FFmpegPCMAudio(self.current.source_url, **_ffmpeg_opts_for(self.current)), volume=self.volume
         )
         self.voice_client.play(source, after=self.play_next)
+
+        if self.text_channel:
+            asyncio.run_coroutine_threadsafe(self._announce_now_playing(), self.bot.loop)
+
+    async def _announce_now_playing(self):
+        if not self.text_channel or not self.current:
+            return
+        song = self.current
+        embed = discord.Embed(
+            title="▶️ Now Playing",
+            description=f"[{song.title}]({song.webpage_url})",
+            color=discord.Color.green(),
+        )
+        embed.add_field(name="Duration", value=song.format_duration())
+        if song.autoplay:
+            embed.add_field(name="Requested by", value="🔀 Autoplay")
+        else:
+            embed.add_field(name="Requested by", value=song.requester.mention)
+        if song.source == "soundcloud":
+            embed.set_footer(text="via SoundCloud (YouTube blocked the request)")
+        try:
+            await self.text_channel.send(embed=embed, view=MusicControlView())
+        except discord.Forbidden:
+            pass
+
+    async def _autoplay_next(self):
+        last = self.current
+        if last is None:
+            self.current = None
+            return
+
+        song = await find_autoplay_song(last, self.bot.loop)
+        if song is None:
+            self.current = None
+            if self.text_channel:
+                try:
+                    await self.text_channel.send(
+                        embed=discord.Embed(
+                            description="Autoplay couldn't find anything else to play here — queue's empty. Use `/play` to start again.",
+                            color=discord.Color.orange(),
+                        )
+                    )
+                except discord.Forbidden:
+                    pass
+            return
+
+        self.queue.append(song)
+        self.play_next()
 
 
 def music_embed(text: str, color=discord.Color.blurple()) -> discord.Embed:
@@ -225,6 +387,7 @@ class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.states: dict[int, GuildMusicState] = {}
+        self.bot.add_view(MusicControlView())
 
     def get_state(self, guild: discord.Guild) -> GuildMusicState:
         if guild.id not in self.states:
@@ -250,10 +413,10 @@ class Music(commands.Cog):
                 if all(m.bot for m in before.channel.members):
                     await asyncio.sleep(60)
                     if state.voice_client and state.voice_client.channel and all(m.bot for m in state.voice_client.channel.members):
+                        state.queue.clear()
+                        state.current = None  # clear first so autoplay doesn't fire as we're leaving
                         await state.voice_client.disconnect()
                         state.voice_client = None
-                        state.queue.clear()
-                        state.current = None
 
     async def ensure_voice(self, interaction: discord.Interaction) -> GuildMusicState | None:
         """
@@ -311,13 +474,12 @@ class Music(commands.Cog):
         state.text_channel = interaction.channel
         state.queue.append(song)
 
-        source_note = " (via SoundCloud, YouTube blocked the request)" if song.source == "soundcloud" else ""
-
         if state.voice_client.is_playing() or state.voice_client.is_paused():
+            source_note = " (via SoundCloud, YouTube blocked the request)" if song.source == "soundcloud" else ""
             await interaction.followup.send(embed=music_embed(f"➕ Queued **{song.title}** ({song.format_duration()}){source_note}"))
         else:
-            state.play_next()
-            await interaction.followup.send(embed=music_embed(f"▶️ Now playing **{song.title}** ({song.format_duration()}){source_note}", discord.Color.green()))
+            state.play_next()  # this announces "Now Playing" with the panel on its own
+            await interaction.followup.send(embed=music_embed(f"▶️ Starting **{song.title}**...", discord.Color.green()), ephemeral=True)
 
     async def _play_spotify(self, interaction: discord.Interaction, state: "GuildMusicState", query: str):
         queries = await resolve_spotify_queries(query, self.bot.loop)
@@ -344,7 +506,7 @@ class Music(commands.Cog):
             state.queue.append(song)
             added += 1
             if not started_playing:
-                state.play_next()
+                state.play_next()  # announces "Now Playing" with the panel on its own
                 started_playing = True
 
         note = " (matched via YouTube -- actual Spotify audio isn't accessible to bots)"
@@ -387,6 +549,7 @@ class Music(commands.Cog):
         state = self.get_state(interaction.guild)
         state.queue.clear()
         state.loop_song = False
+        state.current = None  # clear first so autoplay doesn't immediately kick back in
         if state.voice_client:
             state.voice_client.stop()
         await interaction.response.send_message(embed=music_embed("⏹️ Stopped and cleared the queue."))
@@ -395,10 +558,10 @@ class Music(commands.Cog):
     async def leave(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild)
         if state.voice_client:
+            state.queue.clear()
+            state.current = None  # clear first so autoplay doesn't fire as we're leaving
             await state.voice_client.disconnect()
             state.voice_client = None
-            state.queue.clear()
-            state.current = None
         await interaction.response.send_message(embed=music_embed("👋 Disconnected."))
 
     @app_commands.command(name="queue", description="What's queued up")
@@ -410,14 +573,15 @@ class Music(commands.Cog):
 
         embed = discord.Embed(title="🎵 Music Queue", color=discord.Color.green())
         if state.current:
+            who = "🔀 Autoplay" if state.current.autoplay else state.current.requester.mention
             embed.add_field(
                 name="Now Playing",
-                value=f"**{state.current.title}** ({state.current.format_duration()}) — requested by {state.current.requester.mention}",
+                value=f"**{state.current.title}** ({state.current.format_duration()}) — {who}",
                 inline=False,
             )
         if state.queue:
             lines = [
-                f"{i}. {s.title} ({s.format_duration()}) — {s.requester.mention}"
+                f"{i}. {s.title} ({s.format_duration()}) — {'🔀 Autoplay' if s.autoplay else s.requester.mention}"
                 for i, s in enumerate(state.queue[:10], start=1)
             ]
             embed.add_field(name="Up Next", value="\n".join(lines), inline=False)
@@ -433,8 +597,9 @@ class Music(commands.Cog):
             return
         embed = discord.Embed(title="Now Playing", description=f"[{state.current.title}]({state.current.webpage_url})", color=discord.Color.green())
         embed.add_field(name="Duration", value=state.current.format_duration())
-        embed.add_field(name="Requested by", value=state.current.requester.mention)
-        await interaction.response.send_message(embed=embed)
+        who = "🔀 Autoplay" if state.current.autoplay else state.current.requester.mention
+        embed.add_field(name="Requested by", value=who)
+        await interaction.response.send_message(embed=embed, view=MusicControlView())
 
     @app_commands.command(name="volume", description="Adjust the volume, 0-100")
     @app_commands.describe(percent="0-100")
@@ -451,6 +616,11 @@ class Music(commands.Cog):
         state.loop_song = not state.loop_song
         await interaction.response.send_message(embed=music_embed(f"🔁 Looping is now **{'on' if state.loop_song else 'off'}**."))
 
+    @app_commands.command(name="autoplay", description="Toggle auto-playing related songs once the queue runs out")
+    async def autoplay(self, interaction: discord.Interaction):
+        state = self.get_state(interaction.guild)
+        state.autoplay = not state.autoplay
+        await interaction.response.send_message(embed=music_embed(f"🔀 Autoplay is now **{'on' if state.autoplay else 'off'}**."))
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         message = f"Something went wrong: `{error}`"
