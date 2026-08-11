@@ -6,7 +6,8 @@ HELP_SECTIONS = {
     "🎵 Music": [
         "/play <query> — play a song by name or URL",
         "/pause, /resume, /skip, /stop, /leave",
-        "/queue, /nowplaying, /volume <0-100>, /loop",
+        "/queue, /nowplaying, /volume <0-100>, /loop, /autoplay",
+        "Every song gets a Now Playing panel with pause/skip/stop/queue buttons",
     ],
     "📈 Leveling": [
         "/rank [member] — show level & XP (private if checking yourself)",
@@ -41,7 +42,7 @@ class General(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="List all available commands")
+    @app_commands.command(name="help", description="Everything this bot can do")
     async def help(self, interaction: discord.Interaction):
         embed = discord.Embed(title="Bot Commands", color=discord.Color.blurple())
         if interaction.guild and interaction.guild.icon:
