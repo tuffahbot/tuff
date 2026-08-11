@@ -42,14 +42,16 @@ LEVEL_COLORS = {
 }
 
 XP_MIN, XP_MAX = 8, 15        # xp awarded per eligible message (was 15-25)
-XP_COOLDOWN_SECONDS = 90      # per-user cooldown to prevent spam-leveling (was 60)
+XP_COOLDOWN_SECONDS = 75      # per-user cooldown to prevent spam-leveling (was 90)
 
 
 def xp_for_level(level: int) -> int:
     """Total cumulative XP required to reach `level`. Roughly 2x the old
     MEE6-style curve, on top of the lower per-message XP above -- leveling
     is noticeably slower end-to-end now."""
-    return 10 * (level ** 2) + 100 * level + 200
+    return 10 * (level ** 2) + 100 * level + 200 
+
+
 
 
 def level_from_xp(xp: int) -> int:
