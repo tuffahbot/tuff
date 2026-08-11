@@ -7,13 +7,36 @@ from discord.ext import commands
 import database as db
 from logsutil import send_log
 
-# Anyone with one of these role IDs can use ALL moderation commands below,
-# regardless of their Discord permissions. Add/remove IDs as needed.
-MOD_ROLE_IDS = {
-    1536186361378381924,
-    1536186651632738335,
-    1536175409199194202,
+# ---------------------------------------------------------------------------
+# Rank hierarchy: Owner > Administrator > Moderator > everyone else.
+# Each rank can moderate anyone below it, but never someone at its own rank
+# or higher -- e.g. an Administrator can kick/ban/timeout a Moderator or a
+# regular member, but NOT another Administrator or the Owner. Regular
+# members (nobody, tier 0) can be moderated by anyone with command access.
+# ---------------------------------------------------------------------------
+TIER_OWNER = 3
+TIER_ADMIN = 2
+TIER_MOD = 1
+
+ROLE_TIERS = {
+    1536175409199194202: TIER_OWNER,
+    1536186361378381924: TIER_ADMIN,
+    1536186651632738335: TIER_MOD,
 }
+
+
+def get_tier(member: discord.Member) -> int:
+    return max((ROLE_TIERS.get(role.id, 0) for role in member.roles), default=0)
+
+
+def can_moderate(actor: discord.Member, target: discord.Member) -> bool:
+    """Whether actor is allowed to run a moderation action on target."""
+    if actor.id == target.id:
+        return False
+    target_tier = get_tier(target)
+    if target_tier == 0:
+        return True  # regular members are fair game for anyone with command access
+    return get_tier(actor) > target_tier
 
 
 def mod_embed(title: str, description: str, color=discord.Color.orange()) -> discord.Embed:
@@ -22,14 +45,16 @@ def mod_embed(title: str, description: str, color=discord.Color.orange()) -> dis
 
 def has_mod_access(**required_perms: bool):
     """
-    Passes if the member has one of MOD_ROLE_IDS, OR has all the given
-    Discord permissions (e.g. has_mod_access(kick_members=True)).
+    Passes if the member holds the Owner, Administrator, or Moderator role
+    (see ROLE_TIERS), OR has all the given Discord permissions (e.g.
+    has_mod_access(kick_members=True)). This only gates whether the command
+    can be used at all -- can_moderate() above still applies per-target.
     """
     async def predicate(interaction: discord.Interaction) -> bool:
         member = interaction.user
         if not isinstance(member, discord.Member):
             return False
-        if any(role.id in MOD_ROLE_IDS for role in member.roles):
+        if get_tier(member) > 0:
             return True
         perms = member.guild_permissions
         return all(getattr(perms, perm_name, False) == expected for perm_name, expected in required_perms.items())
@@ -52,12 +77,24 @@ class Moderation(commands.Cog):
         else:
             await interaction.followup.send(f"✅ {embed.title}", ephemeral=True)
 
+    async def _check_hierarchy(self, interaction: discord.Interaction, target: discord.Member) -> bool:
+        if can_moderate(interaction.user, target):
+            return True
+        if interaction.user.id == target.id:
+            msg = "You can't use that on yourself."
+        else:
+            msg = "You can't moderate someone at your rank or above."
+        await interaction.response.send_message(msg, ephemeral=True)
+        return False
+
     # ---------------- Warnings ----------------
 
-    @app_commands.command(name="warn", description="Warn a member")
-    @app_commands.describe(member="Member to warn", reason="Reason for the warning")
+    @app_commands.command(name="warn", description="Give someone a warning")
+    @app_commands.describe(member="Who", reason="What they did")
     @has_mod_access(moderate_members=True)
     async def warn(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
+        if not await self._check_hierarchy(interaction, member):
+            return
         warning_id = db.add_warning(interaction.guild_id, member.id, interaction.user.id, reason)
         count = len(db.get_warnings(interaction.guild_id, member.id))
 
@@ -68,8 +105,8 @@ class Moderation(commands.Cog):
         except discord.Forbidden:
             pass
 
-    @app_commands.command(name="warnings", description="List a member's warnings")
-    @app_commands.describe(member="Member to check")
+    @app_commands.command(name="warnings", description="Pull up someone's warning history")
+    @app_commands.describe(member="Who")
     @has_mod_access(moderate_members=True)
     async def warnings(self, interaction: discord.Interaction, member: discord.Member):
         rows = db.get_warnings(interaction.guild_id, member.id)
@@ -82,16 +119,18 @@ class Moderation(commands.Cog):
             embed=mod_embed(f"Warnings for {member.display_name}", "\n".join(lines)), ephemeral=True
         )
 
-    @app_commands.command(name="clearwarnings", description="Clear all warnings for a member")
-    @app_commands.describe(member="Member to clear warnings for")
+    @app_commands.command(name="clearwarnings", description="Wipe someone's warnings clean")
+    @app_commands.describe(member="Who")
     @has_mod_access(manage_guild=True)
     async def clearwarnings(self, interaction: discord.Interaction, member: discord.Member):
+        if not await self._check_hierarchy(interaction, member):
+            return
         count = db.clear_warnings(interaction.guild_id, member.id)
         embed = mod_embed("🧹 Warnings Cleared", f"Cleared {count} warning(s) for {member.mention}.")
         await self._log_and_confirm(interaction, embed)
 
-    @app_commands.command(name="removewarning", description="Remove a single warning by its ID")
-    @app_commands.describe(warning_id="The warning ID (shown in /warnings)")
+    @app_commands.command(name="removewarning", description="Delete one specific warning")
+    @app_commands.describe(warning_id="ID from /warnings")
     @has_mod_access(manage_guild=True)
     async def removewarning(self, interaction: discord.Interaction, warning_id: int):
         removed = db.remove_warning(interaction.guild_id, warning_id)
@@ -103,12 +142,11 @@ class Moderation(commands.Cog):
 
     # ---------------- Kick / Ban ----------------
 
-    @app_commands.command(name="kick", description="Kick a member")
-    @app_commands.describe(member="Member to kick", reason="Reason for the kick")
+    @app_commands.command(name="kick", description="Kick someone out of the server")
+    @app_commands.describe(member="Who", reason="Why")
     @has_mod_access(kick_members=True)
     async def kick(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
-        if member.top_role >= interaction.user.top_role and interaction.user.id != interaction.guild.owner_id:
-            await interaction.response.send_message("You can't kick someone with an equal or higher role.", ephemeral=True)
+        if not await self._check_hierarchy(interaction, member):
             return
         try:
             await member.send(f"You were kicked from **{interaction.guild.name}**.\nReason: {reason}")
@@ -118,12 +156,11 @@ class Moderation(commands.Cog):
         embed = mod_embed("👢 Member Kicked", f"{member.mention} was kicked.\n**Reason:** {reason}")
         await self._log_and_confirm(interaction, embed)
 
-    @app_commands.command(name="ban", description="Ban a member")
-    @app_commands.describe(member="Member to ban", reason="Reason for the ban", delete_days="Days of message history to delete (0-7)")
+    @app_commands.command(name="ban", description="Ban someone")
+    @app_commands.describe(member="Who", reason="Why", delete_days="Wipe their last N days of messages (0-7)")
     @has_mod_access(ban_members=True)
     async def ban(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided", delete_days: app_commands.Range[int, 0, 7] = 0):
-        if member.top_role >= interaction.user.top_role and interaction.user.id != interaction.guild.owner_id:
-            await interaction.response.send_message("You can't ban someone with an equal or higher role.", ephemeral=True)
+        if not await self._check_hierarchy(interaction, member):
             return
         try:
             await member.send(f"You were banned from **{interaction.guild.name}**.\nReason: {reason}")
@@ -133,8 +170,8 @@ class Moderation(commands.Cog):
         embed = mod_embed("🔨 Member Banned", f"{member.mention} was banned.\n**Reason:** {reason}", discord.Color.red())
         await self._log_and_confirm(interaction, embed)
 
-    @app_commands.command(name="unban", description="Unban a user by ID")
-    @app_commands.describe(user_id="The Discord user ID to unban")
+    @app_commands.command(name="unban", description="Lift a ban using their user ID")
+    @app_commands.describe(user_id="Their Discord user ID")
     @has_mod_access(ban_members=True)
     async def unban(self, interaction: discord.Interaction, user_id: str):
         try:
@@ -147,27 +184,35 @@ class Moderation(commands.Cog):
 
     # ---------------- Timeout ----------------
 
-    @app_commands.command(name="timeout", description="Timeout (mute) a member for a number of minutes")
-    @app_commands.describe(member="Member to time out", minutes="Duration in minutes (max 40320 = 28 days)", reason="Reason")
+    @app_commands.command(name="timeout", description="Mute someone for a bit")
+    @app_commands.describe(member="Who", minutes="How long, in minutes (up to 40320 = 28 days)", reason="Why")
     @has_mod_access(moderate_members=True)
     async def timeout(self, interaction: discord.Interaction, member: discord.Member, minutes: app_commands.Range[int, 1, 40320], reason: str = "No reason provided"):
+        if not await self._check_hierarchy(interaction, member):
+            return
         until = discord.utils.utcnow() + timedelta(minutes=minutes)
         await member.timeout(until, reason=f"{reason} — by {interaction.user}")
+        try:
+            await member.send(f"You're timed out in **{interaction.guild.name}** for {minutes} minute(s).\nReason: {reason}")
+        except discord.Forbidden:
+            pass
         embed = mod_embed("🔇 Member Timed Out", f"{member.mention} is timed out for {minutes} minute(s).\n**Reason:** {reason}")
         await self._log_and_confirm(interaction, embed)
 
-    @app_commands.command(name="untimeout", description="Remove a member's timeout")
-    @app_commands.describe(member="Member to remove timeout from")
+    @app_commands.command(name="untimeout", description="Lift someone's timeout early")
+    @app_commands.describe(member="Who")
     @has_mod_access(moderate_members=True)
     async def untimeout(self, interaction: discord.Interaction, member: discord.Member):
+        if not await self._check_hierarchy(interaction, member):
+            return
         await member.timeout(None, reason=f"Timeout removed by {interaction.user}")
         embed = mod_embed("🔊 Timeout Removed", f"Removed timeout for {member.mention}.")
         await self._log_and_confirm(interaction, embed)
 
     # ---------------- Channel management ----------------
 
-    @app_commands.command(name="purge", description="Bulk delete messages in this channel")
-    @app_commands.describe(amount="How many messages to delete (max 1000)")
+    @app_commands.command(name="purge", description="Mass-delete messages in this channel")
+    @app_commands.describe(amount="How many (up to 1000)")
     @has_mod_access(manage_messages=True)
     async def purge(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 1000]):
         await interaction.response.defer(ephemeral=True)
@@ -177,8 +222,8 @@ class Moderation(commands.Cog):
         await send_log(self.bot, embed)
         await interaction.followup.send(f"Deleted {len(deleted)} message(s).", ephemeral=True)
 
-    @app_commands.command(name="slowmode", description="Set slowmode delay for this channel")
-    @app_commands.describe(seconds="Delay in seconds (0 to disable, max 21600)")
+    @app_commands.command(name="slowmode", description="Turn slowmode on/off for this channel")
+    @app_commands.describe(seconds="Seconds between messages (0 turns it off, max 21600)")
     @has_mod_access(manage_channels=True)
     async def slowmode(self, interaction: discord.Interaction, seconds: app_commands.Range[int, 0, 21600]):
         await interaction.channel.edit(slowmode_delay=seconds)
@@ -191,7 +236,7 @@ class Moderation(commands.Cog):
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, (app_commands.MissingPermissions, app_commands.CheckFailure)):
             await interaction.response.send_message(
-                "You don't have permission to use this command (need the mod role or the relevant Discord permission).",
+                "You don't have permission to use this command (need the Owner/Administrator/Moderator role or the relevant Discord permission).",
                 ephemeral=True,
             )
         elif isinstance(error, discord.Forbidden):
