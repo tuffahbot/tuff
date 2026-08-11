@@ -42,16 +42,14 @@ LEVEL_COLORS = {
 }
 
 XP_MIN, XP_MAX = 8, 15        # xp awarded per eligible message (was 15-25)
-XP_COOLDOWN_SECONDS = 75      # per-user cooldown to prevent spam-leveling (was 90)
+XP_COOLDOWN_SECONDS = 90      # per-user cooldown to prevent spam-leveling (was 60)
 
 
 def xp_for_level(level: int) -> int:
     """Total cumulative XP required to reach `level`. Roughly 2x the old
     MEE6-style curve, on top of the lower per-message XP above -- leveling
     is noticeably slower end-to-end now."""
-    return 10 * (level ** 2) + 100 * level + 200 
-
-
+    return 10 * (level ** 2) + 100 * level + 200
 
 
 def level_from_xp(xp: int) -> int:
@@ -169,8 +167,8 @@ class Leveling(commands.Cog):
             except discord.Forbidden:
                 pass
 
-    @app_commands.command(name="rank", description="Show your (or someone else's) level and XP")
-    @app_commands.describe(member="Whose rank to check (defaults to you)")
+    @app_commands.command(name="rank", description="Check your rank, or someone else's")
+    @app_commands.describe(member="Leave blank for yourself")
     async def rank(self, interaction: discord.Interaction, member: discord.Member = None):
         target = member or interaction.user
         is_self = target.id == interaction.user.id
@@ -182,43 +180,51 @@ class Leveling(commands.Cog):
         next_floor = xp_for_level(level + 1)
         progress = xp - current_floor
         needed = next_floor - current_floor
-        bar_filled = int((progress / needed) * 10) if needed else 0
-        bar = "█" * bar_filled + "░" * (10 - bar_filled)
+        bar_filled = int((progress / needed) * 20) if needed else 0
+        bar = "▰" * bar_filled + "▱" * (20 - bar_filled)
+        percent = int((progress / needed) * 100) if needed else 0
 
-        embed = discord.Embed(title=f"Rank — {target.display_name}", color=discord.Color.blurple())
+        embed = discord.Embed(
+            title=target.display_name,
+            description=(
+                f"Level {level} · Rank {f'#{position}' if position else '—'}\n"
+                f"{bar}\n"
+                f"┃ {percent}%\n"
+                f"XP {xp:,} · {progress:,}/{needed:,} to level {level + 1}"
+            ),
+            color=discord.Color.green(),
+        )
         embed.set_thumbnail(url=target.display_avatar.url)
-        embed.add_field(name="Level", value=str(level), inline=True)
-        embed.add_field(name="Server Rank", value=f"#{position}" if position else "Unranked", inline=True)
-        embed.add_field(name="XP Progress", value=f"`{bar}` {progress}/{needed}", inline=False)
-        embed.set_footer(text=f"Total XP: {xp}")
+        embed.set_footer(text="Made by Mercyy")
 
         await interaction.response.send_message(embed=embed, ephemeral=is_self)
 
-    @app_commands.command(name="leaderboard", description="Show the server XP leaderboard")
+    @app_commands.command(name="leaderboard", description="Who's at the top of the server")
     async def leaderboard(self, interaction: discord.Interaction):
         rows = db.get_leaderboard(interaction.guild_id, limit=10)
         if not rows:
             await interaction.response.send_message("No one has earned XP yet.")
             return
 
-        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
         lines = []
         for i, row in enumerate(rows, start=1):
             member = interaction.guild.get_member(row["user_id"])
             name = member.display_name if member else f"User {row['user_id']}"
-            prefix = medals.get(i, f"**{i}.**")
-            lines.append(f"{prefix} {name} — Level {row['level']} ({row['xp']} XP)")
+            lines.append(f"{i}. {name} - lvl {row['level']} ({row['xp']} XP)")
 
         embed = discord.Embed(
-            title=f"🏆 {interaction.guild.name} Leaderboard",
-            description="\n".join(lines),
+            title="XP leaderboard",
+            description=(
+                f"{interaction.guild.name} · Top 10\n\n"
+                + "\n".join(lines)
+                + "\n\n*May change with each XP message.*"
+            ),
             color=discord.Color.gold(),
         )
-        if interaction.guild.icon:
-            embed.set_thumbnail(url=interaction.guild.icon.url)
+        embed.set_footer(text="Made by Mercyy")
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="setuplevelroles", description="[Admin] Create the Level 5/10/25/50 roles in this server if they don't exist")
+    @app_commands.command(name="setuplevelroles", description="[Admin] Set up the level roles if they're missing")
     @app_commands.checks.has_permissions(manage_roles=True)
     async def setuplevelroles(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -255,8 +261,8 @@ class Leveling(commands.Cog):
         )
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="give_xp", description="[Admin] Manually add XP to a member")
-    @app_commands.describe(member="Member to give XP to", amount="Amount of XP to add")
+    @app_commands.command(name="give_xp", description="[Admin] Hand someone some XP")
+    @app_commands.describe(member="Who", amount="How much")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def give_xp(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000]):
         xp, level = db.get_user_xp(interaction.guild_id, member.id)
@@ -281,8 +287,8 @@ class Leveling(commands.Cog):
                     except discord.Forbidden:
                         pass
 
-    @app_commands.command(name="remove_xp", description="[Admin] Remove XP from a member")
-    @app_commands.describe(member="Member to remove XP from", amount="Amount of XP to remove")
+    @app_commands.command(name="remove_xp", description="[Admin] Take XP away from someone")
+    @app_commands.describe(member="Who", amount="How much")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def remove_xp(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000]):
         xp, level = db.get_user_xp(interaction.guild_id, member.id)
@@ -295,7 +301,7 @@ class Leveling(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="resetxp", description="[Admin] Reset XP/levels for the ENTIRE server")
+    @app_commands.command(name="resetxp", description="[Admin] Wipe every member's XP — careful with this one")
     @app_commands.checks.has_permissions(administrator=True)
     async def resetxp(self, interaction: discord.Interaction):
         view = ConfirmResetView(interaction.user.id, interaction.guild_id)
