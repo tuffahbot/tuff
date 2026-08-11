@@ -7,7 +7,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from database import init_db
+from database import init_db, DB_PATH
 
 load_dotenv()
 
@@ -79,6 +79,16 @@ async def main():
         )
     else:
         log.info(f"ffmpeg found at {shutil.which('ffmpeg')}")
+
+    if DB_PATH == "bot.db":
+        log.warning(
+            "DB_PATH is not set -- using the default 'bot.db' in the container's own filesystem, "
+            "which is WIPED on every redeploy/restart. If you meant to persist data on a Railway "
+            "Volume, set DB_PATH on the WORKER SERVICE's own Variables tab (not just Project "
+            "Settings -> Shared Variables -- that alone doesn't inject it into the service)."
+        )
+    else:
+        log.info(f"Using database at {DB_PATH}")
 
     init_db()
 
