@@ -1,11 +1,18 @@
 import asyncio
 import functools
 import os
+import re
 
 import discord
 import yt_dlp
 from discord import app_commands
 from discord.ext import commands
+
+try:
+    import spotipy
+    from spotipy.oauth2 import SpotifyClientCredentials
+except ImportError:
+    spotipy = None
 
 YTDL_OPTS = {
     "format": "bestaudio/best",
@@ -39,6 +46,71 @@ FFMPEG_OPTS = {
     "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "options": "-vn",
 }
+
+# --- Spotify link support -----------------------------------------------
+# Spotify's API never gives out actual audio (it's DRM-protected), so this
+# only reads the track names off a Spotify link via Spotify's API, then
+# plays the matching audio for each one through YouTube -- same as any
+# other Spotify-aware Discord music bot does it. Needs SPOTIFY_CLIENT_ID
+# and SPOTIFY_CLIENT_SECRET set (see README); without them, Spotify links
+# just get told to the person as unsupported.
+SPOTIFY_URL_RE = re.compile(r"open\.spotify\.com/(track|album|playlist)/([a-zA-Z0-9]+)")
+MAX_SPOTIFY_TRACKS = 50
+
+_spotify_client = None
+_spotify_checked = False
+
+
+def get_spotify_client():
+    global _spotify_client, _spotify_checked
+    if _spotify_checked:
+        return _spotify_client
+    _spotify_checked = True
+    if spotipy is None:
+        return None
+    client_id = os.getenv("SPOTIFY_CLIENT_ID")
+    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return None
+    _spotify_client = spotipy.Spotify(
+        auth_manager=SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
+    )
+    return _spotify_client
+
+
+async def resolve_spotify_queries(url: str, loop: asyncio.AbstractEventLoop) -> list[str] | None:
+    """Returns a list of 'track - artist' search strings for a Spotify
+    track/album/playlist link, or None if Spotify isn't configured."""
+    sp = get_spotify_client()
+    if sp is None:
+        return None
+
+    match = SPOTIFY_URL_RE.search(url)
+    if not match:
+        return None
+    kind, spotify_id = match.groups()
+
+    def _fetch() -> list[str]:
+        if kind == "track":
+            t = sp.track(spotify_id)
+            return [f"{t['name']} {t['artists'][0]['name']}"]
+
+        if kind == "album":
+            items = sp.album_tracks(spotify_id, limit=MAX_SPOTIFY_TRACKS)["items"]
+            return [f"{t['name']} {t['artists'][0]['name']}" for t in items]
+
+        # playlist
+        items = sp.playlist_items(
+            spotify_id, limit=MAX_SPOTIFY_TRACKS, fields="items.track.name,items.track.artists"
+        )["items"]
+        queries = []
+        for item in items:
+            track = item.get("track")
+            if track:
+                queries.append(f"{track['name']} {track['artists'][0]['name']}")
+        return queries
+
+    return await loop.run_in_executor(None, _fetch)
 
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTS)
 
@@ -211,12 +283,16 @@ class Music(commands.Cog):
 
         return state
 
-    @app_commands.command(name="play", description="Play a song by name or URL (joins your voice channel)")
-    @app_commands.describe(query="Song name or URL")
+    @app_commands.command(name="play", description="Queue up a song — search by name or drop a link")
+    @app_commands.describe(query="Name it or paste a link (YouTube, SoundCloud, or Spotify track/album/playlist)")
     async def play(self, interaction: discord.Interaction, query: str):
         await interaction.response.defer()
         state = await self.ensure_voice(interaction)
         if state is None:
+            return
+
+        if "open.spotify.com" in query:
+            await self._play_spotify(interaction, state, query)
             return
 
         try:
@@ -243,7 +319,43 @@ class Music(commands.Cog):
             state.play_next()
             await interaction.followup.send(embed=music_embed(f"▶️ Now playing **{song.title}** ({song.format_duration()}){source_note}", discord.Color.green()))
 
-    @app_commands.command(name="pause", description="Pause the current song")
+    async def _play_spotify(self, interaction: discord.Interaction, state: "GuildMusicState", query: str):
+        queries = await resolve_spotify_queries(query, self.bot.loop)
+        if queries is None:
+            await interaction.followup.send(
+                "Spotify links aren't set up on this bot yet -- an admin needs to add "
+                "`SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` (see the README). "
+                "In the meantime, try searching by song name instead."
+            )
+            return
+        if not queries:
+            await interaction.followup.send("Couldn't find any tracks in that Spotify link.")
+            return
+
+        state.text_channel = interaction.channel
+        started_playing = state.voice_client.is_playing() or state.voice_client.is_paused()
+        added = 0
+
+        for search_text in queries:
+            try:
+                song = await Song.from_query(search_text, interaction.user, self.bot.loop)
+            except Exception:
+                continue  # skip tracks with no decent YouTube/SoundCloud match
+            state.queue.append(song)
+            added += 1
+            if not started_playing:
+                state.play_next()
+                started_playing = True
+
+        note = " (matched via YouTube -- actual Spotify audio isn't accessible to bots)"
+        if added == 0:
+            await interaction.followup.send("Couldn't find playable matches for any track in that Spotify link.")
+        elif len(queries) > added:
+            await interaction.followup.send(embed=music_embed(f"🎧 Added {added}/{len(queries)} track(s) from Spotify{note}"))
+        else:
+            await interaction.followup.send(embed=music_embed(f"🎧 Added {added} track(s) from Spotify{note}"))
+
+    @app_commands.command(name="pause", description="Pause whatever's playing")
     async def pause(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild)
         if state.voice_client and state.voice_client.is_playing():
@@ -252,7 +364,7 @@ class Music(commands.Cog):
         else:
             await interaction.response.send_message("Nothing is playing.", ephemeral=True)
 
-    @app_commands.command(name="resume", description="Resume the current song")
+    @app_commands.command(name="resume", description="Unpause it")
     async def resume(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild)
         if state.voice_client and state.voice_client.is_paused():
@@ -261,7 +373,7 @@ class Music(commands.Cog):
         else:
             await interaction.response.send_message("Nothing is paused.", ephemeral=True)
 
-    @app_commands.command(name="skip", description="Skip the current song")
+    @app_commands.command(name="skip", description="Skip to the next one")
     async def skip(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild)
         if state.voice_client and (state.voice_client.is_playing() or state.voice_client.is_paused()):
@@ -270,7 +382,7 @@ class Music(commands.Cog):
         else:
             await interaction.response.send_message("Nothing to skip.", ephemeral=True)
 
-    @app_commands.command(name="stop", description="Stop playback and clear the queue")
+    @app_commands.command(name="stop", description="Kill the music and wipe the queue")
     async def stop(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild)
         state.queue.clear()
@@ -279,7 +391,7 @@ class Music(commands.Cog):
             state.voice_client.stop()
         await interaction.response.send_message(embed=music_embed("⏹️ Stopped and cleared the queue."))
 
-    @app_commands.command(name="leave", description="Disconnect the bot from voice")
+    @app_commands.command(name="leave", description="Kick the bot out of voice")
     async def leave(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild)
         if state.voice_client:
@@ -289,7 +401,7 @@ class Music(commands.Cog):
             state.current = None
         await interaction.response.send_message(embed=music_embed("👋 Disconnected."))
 
-    @app_commands.command(name="queue", description="Show the current song queue")
+    @app_commands.command(name="queue", description="What's queued up")
     async def queue_(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild)
         if not state.current and not state.queue:
@@ -313,7 +425,7 @@ class Music(commands.Cog):
                 embed.set_footer(text=f"...and {len(state.queue) - 10} more")
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="nowplaying", description="Show the currently playing song")
+    @app_commands.command(name="nowplaying", description="What's playing right now")
     async def nowplaying(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild)
         if not state.current:
@@ -324,8 +436,8 @@ class Music(commands.Cog):
         embed.add_field(name="Requested by", value=state.current.requester.mention)
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="volume", description="Set playback volume (0-100)")
-    @app_commands.describe(percent="Volume percentage, 0-100")
+    @app_commands.command(name="volume", description="Adjust the volume, 0-100")
+    @app_commands.describe(percent="0-100")
     async def volume(self, interaction: discord.Interaction, percent: app_commands.Range[int, 0, 100]):
         state = self.get_state(interaction.guild)
         state.volume = percent / 100
@@ -333,7 +445,7 @@ class Music(commands.Cog):
             state.voice_client.source.volume = state.volume
         await interaction.response.send_message(embed=music_embed(f"🔊 Volume set to {percent}%."))
 
-    @app_commands.command(name="loop", description="Toggle looping the current song")
+    @app_commands.command(name="loop", description="Repeat the current song on/off")
     async def loop(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild)
         state.loop_song = not state.loop_song
