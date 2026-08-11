@@ -8,6 +8,7 @@ See the README for setup steps.
 """
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 
 DB_PATH = os.getenv("DB_PATH", "bot.db")
@@ -25,45 +26,66 @@ def get_conn():
 
 
 def init_db():
-    with get_conn() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS levels (
-                guild_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                xp INTEGER NOT NULL DEFAULT 0,
-                level INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (guild_id, user_id)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS warnings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                moderator_id INTEGER NOT NULL,
-                reason TEXT,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS giveaways (
-                message_id INTEGER PRIMARY KEY,
-                guild_id INTEGER NOT NULL,
-                channel_id INTEGER NOT NULL,
-                prize TEXT NOT NULL,
-                winners INTEGER NOT NULL,
-                host_id INTEGER NOT NULL,
-                ends_at TEXT NOT NULL,
-                ended INTEGER NOT NULL DEFAULT 0
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS giveaway_entries (
-                message_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                PRIMARY KEY (message_id, user_id)
-            )
-        """)
+    # Make sure the parent directory exists (e.g. /data for a mounted
+    # Railway Volume) -- sqlite3 fails with "unable to open database file"
+    # if it doesn't. On some hosts the volume mount can also briefly lag
+    # behind the container starting up, so retry a few times before giving up.
+    parent = os.path.dirname(DB_PATH)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    last_error = None
+    for attempt in range(5):
+        try:
+            with get_conn() as conn:
+                _create_tables(conn)
+            return
+        except sqlite3.OperationalError as e:
+            last_error = e
+            time.sleep(1)
+    raise last_error
+
+
+def _create_tables(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS levels (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            xp INTEGER NOT NULL DEFAULT 0,
+            level INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, user_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS warnings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            moderator_id INTEGER NOT NULL,
+            reason TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS giveaways (
+            message_id INTEGER PRIMARY KEY,
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            prize TEXT NOT NULL,
+            winners INTEGER NOT NULL,
+            host_id INTEGER NOT NULL,
+            ends_at TEXT NOT NULL,
+            ended INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS giveaway_entries (
+            message_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            PRIMARY KEY (message_id, user_id)
+        )
+    """)
+
 
 
 # ---------- Leveling ----------
