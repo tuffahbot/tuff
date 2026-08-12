@@ -35,6 +35,7 @@ STARTUP_EXTENSIONS = (
     "voice",
     "eventlogs",
     "giveaways",
+    "emoji",
 )
 
 
@@ -86,6 +87,13 @@ async def main():
             "which is WIPED on every redeploy/restart. If you meant to persist data on a Railway "
             "Volume, set DB_PATH on the WORKER SERVICE's own Variables tab (not just Project "
             "Settings -> Shared Variables -- that alone doesn't inject it into the service)."
+        )
+    elif not DB_PATH.startswith("/"):
+        log.warning(
+            f"DB_PATH is set to '{DB_PATH}', which isn't an absolute path (doesn't start with '/') "
+            "-- it'll be treated as relative to the container's working directory, NOT your mounted "
+            "volume, so data won't survive a redeploy. This is usually a stray space or typo in the "
+            "Railway variable's value -- it should be exactly /data/bot.db."
         )
     else:
         log.info(f"Using database at {DB_PATH}")
