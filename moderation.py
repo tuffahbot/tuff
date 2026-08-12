@@ -43,6 +43,67 @@ def mod_embed(title: str, description: str, color=discord.Color.orange()) -> dis
     return discord.Embed(title=title, description=description, color=color, timestamp=discord.utils.utcnow())
 
 
+# ---------------------------------------------------------------------------
+# Dyno-style "you used this command wrong" help cards. Shown automatically
+# whenever someone's missing a required argument (or gives a bad one) on a
+# prefix mod command -- e.g. typing "?ban" with no member. Add an entry here
+# for any other prefix command that should get this treatment.
+# ---------------------------------------------------------------------------
+COMMAND_USAGE = {
+    "ban": {
+        "description": "Ban a member from the server.",
+        "usage": ["?ban [member] [reason]"],
+        "example": ["?ban @bean making bugs"],
+    },
+    "kick": {
+        "description": "Kick a member out of the server.",
+        "usage": ["?kick [member] [reason]"],
+        "example": ["?kick @bean stop that"],
+    },
+    "unban": {
+        "description": "Lift a ban using their user ID.",
+        "usage": ["?unban [user_id]"],
+        "example": ["?unban 123456789012345678"],
+    },
+    "timeout": {
+        "description": "Mute a member for a set number of minutes.",
+        "usage": ["?timeout [member] [minutes] [reason]"],
+        "example": ["?timeout @bean 30 cool off"],
+    },
+    "untimeout": {
+        "description": "Lift a member's timeout early.",
+        "usage": ["?untimeout [member]"],
+        "example": ["?untimeout @bean"],
+    },
+    "warn": {
+        "description": "Give a member a warning.",
+        "usage": ["?warn [member] [reason]"],
+        "example": ["?warn @bean spamming links"],
+    },
+    "purge": {
+        "description": "Mass-delete messages in this channel.",
+        "usage": ["?purge [amount]"],
+        "example": ["?purge 50"],
+    },
+}
+
+
+def usage_embed(command_name: str) -> discord.Embed | None:
+    info = COMMAND_USAGE.get(command_name)
+    if info is None:
+        return None
+    lines = [f"**Description:** {info['description']}", "**Usage:**"]
+    lines.extend(info["usage"])
+    lines.append("**Example:**")
+    lines.extend(info["example"])
+    embed = discord.Embed(
+        title=f"Command: ?{command_name}",
+        description="\n".join(lines),
+        color=discord.Color.blurple(),
+    )
+    return embed
+
+
 def has_mod_access(**required_perms: bool):
     """
     Passes if the member holds the Owner, Administrator, or Moderator role
@@ -373,12 +434,22 @@ class Moderation(commands.Cog):
         await ctx.send(f"Deleted {len(deleted)} message(s).", delete_after=5)
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
-        if isinstance(error, commands.MemberNotFound):
-            await self._deny(ctx, "Couldn't find that member.")
-        elif isinstance(error, commands.MissingRequiredArgument):
-            await self._deny(ctx, f"Missing argument: `{error.param.name}`.")
-        elif isinstance(error, commands.BadArgument):
-            await self._deny(ctx, "Check your arguments -- e.g. minutes/amount need to be plain numbers.")
+        command_name = ctx.command.name if ctx.command else None
+        usage = usage_embed(command_name) if command_name else None
+
+        if isinstance(error, (commands.MemberNotFound, commands.MissingRequiredArgument, commands.BadArgument)):
+            if usage is not None:
+                try:
+                    await ctx.message.add_reaction("❌")
+                except discord.HTTPException:
+                    pass
+                await ctx.reply(embed=usage, mention_author=False)
+            elif isinstance(error, commands.MemberNotFound):
+                await self._deny(ctx, "Couldn't find that member.")
+            elif isinstance(error, commands.MissingRequiredArgument):
+                await self._deny(ctx, f"Missing argument: `{error.param.name}`.")
+            else:
+                await self._deny(ctx, "Check your arguments -- e.g. minutes/amount need to be plain numbers.")
         else:
             original = getattr(error, "original", error)
             if isinstance(original, discord.Forbidden):
