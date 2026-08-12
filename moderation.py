@@ -263,6 +263,12 @@ class Moderation(commands.Cog):
             await ctx.message.add_reaction("✅")
         except discord.HTTPException:
             pass
+        # Public confirmation in the channel the command was run in (Dyno-style),
+        # separate from the full embed that goes to the mod-log channel above.
+        try:
+            await ctx.send(embed=embed)
+        except discord.Forbidden:
+            pass
 
     @commands.command(name="kick")
     async def kick_text(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
