@@ -6,6 +6,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import database as db
+from logsutil import send_log
 
 # ---------------------------------------------------------------------------
 # Level -> role name. Create these roles with /setuplevelroles (or manually,
@@ -77,6 +78,16 @@ class ConfirmResetView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         await interaction.response.edit_message(content=f"✅ Reset XP for **{count}** member(s).", view=self)
+
+        log_embed = discord.Embed(
+            title="⚠️ Server XP Reset",
+            description=f"{interaction.user.mention} wiped XP/levels for **{count}** member(s) in **{interaction.guild.name}**.",
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow(),
+        )
+        log_embed.set_footer(text=f"By {interaction.user} ({interaction.user.id})")
+        await send_log(interaction.client, log_embed)
+
         self.stop()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
@@ -246,9 +257,19 @@ class Leveling(commands.Cog):
             ),
             inline=False,
         )
+
+        log_embed = discord.Embed(
+            title="⚙️ Level Roles Set Up",
+            description=f"{requester.mention} ran level role setup. Created: {', '.join(created) or 'none'}. Already existed: {', '.join(existing) or 'none'}.",
+            color=discord.Color.blurple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        log_embed.set_footer(text=f"By {requester} ({requester.id})")
+        await send_log(self.bot, log_embed)
+
         return embed
 
-    async def _apply_xp_change(self, guild: discord.Guild, member: discord.Member, amount: int) -> tuple[discord.Embed, int, int]:
+    async def _apply_xp_change(self, guild: discord.Guild, member: discord.Member, amount: int, requester) -> tuple[discord.Embed, int, int]:
         """Returns (embed, old_level, new_level). amount can be negative."""
         xp, level = db.get_user_xp(guild.id, member.id)
         xp = max(0, xp + amount)
@@ -260,6 +281,16 @@ class Leveling(commands.Cog):
             description=f"{verb} **{abs(amount)} XP** {'to' if amount >= 0 else 'from'} {member.mention}. Now at **{xp} XP** (level {new_level}).",
             color=color,
         )
+
+        log_embed = discord.Embed(
+            title=f"⚙️ XP {verb}",
+            description=f"{requester.mention} {verb.lower()} **{abs(amount)} XP** {'to' if amount >= 0 else 'from'} {member.mention}. Now at **{xp} XP** (level {new_level}).",
+            color=color,
+            timestamp=discord.utils.utcnow(),
+        )
+        log_embed.set_footer(text=f"By {requester} ({requester.id})")
+        await send_log(self.bot, log_embed)
+
         return embed, level, new_level
 
     async def _announce_role_unlock(self, guild: discord.Guild, member: discord.Member, new_level: int, channel: discord.abc.Messageable):
@@ -320,7 +351,7 @@ class Leveling(commands.Cog):
     @app_commands.describe(member="Who", amount="How much")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def give_xp(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000]):
-        embed, level, new_level = await self._apply_xp_change(interaction.guild, member, amount)
+        embed, level, new_level = await self._apply_xp_change(interaction.guild, member, amount, interaction.user)
         await interaction.response.send_message(embed=embed)
         if new_level > level:
             await self._announce_role_unlock(interaction.guild, member, new_level, interaction.channel)
@@ -331,7 +362,7 @@ class Leveling(commands.Cog):
         if not 1 <= amount <= 1_000_000:
             await ctx.reply("Amount must be between 1 and 1,000,000.", mention_author=False)
             return
-        embed, level, new_level = await self._apply_xp_change(ctx.guild, member, amount)
+        embed, level, new_level = await self._apply_xp_change(ctx.guild, member, amount, ctx.author)
         await ctx.reply(embed=embed, mention_author=False)
         if new_level > level:
             await self._announce_role_unlock(ctx.guild, member, new_level, ctx.channel)
@@ -340,7 +371,7 @@ class Leveling(commands.Cog):
     @app_commands.describe(member="Who", amount="How much")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def remove_xp(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000]):
-        embed, _, _ = await self._apply_xp_change(interaction.guild, member, -amount)
+        embed, _, _ = await self._apply_xp_change(interaction.guild, member, -amount, interaction.user)
         await interaction.response.send_message(embed=embed)
 
     @commands.command(name="remove_xp")
@@ -349,7 +380,7 @@ class Leveling(commands.Cog):
         if not 1 <= amount <= 1_000_000:
             await ctx.reply("Amount must be between 1 and 1,000,000.", mention_author=False)
             return
-        embed, _, _ = await self._apply_xp_change(ctx.guild, member, -amount)
+        embed, _, _ = await self._apply_xp_change(ctx.guild, member, -amount, ctx.author)
         await ctx.reply(embed=embed, mention_author=False)
 
     @app_commands.command(name="resetxp", description="[Admin] Wipe every member's XP — careful with this one")
