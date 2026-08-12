@@ -37,6 +37,7 @@ STARTUP_EXTENSIONS = (
     "giveaways",
     "emoji",
     "autorole",
+    "polls",
 )
 
 
