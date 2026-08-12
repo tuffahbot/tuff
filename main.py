@@ -36,6 +36,7 @@ STARTUP_EXTENSIONS = (
     "eventlogs",
     "giveaways",
     "emoji",
+    "autorole",
 )
 
 
