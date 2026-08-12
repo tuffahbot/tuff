@@ -11,7 +11,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 
-DB_PATH = os.getenv("DB_PATH", "bot.db")
+DB_PATH = os.getenv("DB_PATH", "bot.db").strip()
 
 
 @contextmanager
@@ -86,9 +86,42 @@ def _create_tables(conn):
         )
     """)
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guild_settings (
+            guild_id INTEGER PRIMARY KEY,
+            autorole_id INTEGER
+        )
+    """)
 
 
-# ---------- Leveling ----------
+
+# ---------- Guild settings / Autorole ----------
+
+def get_autorole(guild_id: int) -> int | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT autorole_id FROM guild_settings WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+        return row["autorole_id"] if row and row["autorole_id"] else None
+
+
+def set_autorole(guild_id: int, role_id: int):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO guild_settings (guild_id, autorole_id) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET autorole_id = excluded.autorole_id
+        """, (guild_id, role_id))
+
+
+def clear_autorole(guild_id: int):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO guild_settings (guild_id, autorole_id) VALUES (?, NULL)
+            ON CONFLICT(guild_id) DO UPDATE SET autorole_id = NULL
+        """, (guild_id,))
+
+
+
 
 def get_user_xp(guild_id: int, user_id: int) -> tuple[int, int]:
     with get_conn() as conn:
