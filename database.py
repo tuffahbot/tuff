@@ -6,6 +6,7 @@ file will be WIPED on every redeploy/restart unless you attach a Railway
 Volume and point DB_PATH (see .env.example) at a path inside that volume.
 See the README for setup steps.
 """
+import json
 import os
 import sqlite3
 import time
@@ -90,6 +91,26 @@ def _create_tables(conn):
         CREATE TABLE IF NOT EXISTS guild_settings (
             guild_id INTEGER PRIMARY KEY,
             autorole_id INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS polls (
+            message_id INTEGER PRIMARY KEY,
+            guild_id INTEGER NOT NULL,
+            channel_id INTEGER NOT NULL,
+            question TEXT NOT NULL,
+            options TEXT NOT NULL,
+            creator_id INTEGER NOT NULL,
+            ends_at TEXT,
+            ended INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS poll_votes (
+            message_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            option_index INTEGER NOT NULL,
+            PRIMARY KEY (message_id, user_id)
         )
     """)
 
@@ -253,3 +274,57 @@ def get_giveaway_entries(message_id: int) -> list[int]:
             "SELECT user_id FROM giveaway_entries WHERE message_id = ?", (message_id,)
         ).fetchall()
         return [r["user_id"] for r in rows]
+
+
+# ---------- Polls ----------
+
+def create_poll(message_id: int, guild_id: int, channel_id: int, question: str, options: list[str], creator_id: int, ends_at_iso: str | None):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO polls (message_id, guild_id, channel_id, question, options, creator_id, ends_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (message_id, guild_id, channel_id, question, json.dumps(options), creator_id, ends_at_iso),
+        )
+
+
+def get_poll(message_id: int):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM polls WHERE message_id = ?", (message_id,)).fetchone()
+
+
+def get_active_polls():
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM polls WHERE ended = 0").fetchall()
+
+
+def get_due_polls(now_iso: str):
+    """Active, timed polls whose end time has already passed."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM polls WHERE ended = 0 AND ends_at IS NOT NULL AND ends_at <= ?",
+            (now_iso,),
+        ).fetchall()
+
+
+def mark_poll_ended(message_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE polls SET ended = 1 WHERE message_id = ?", (message_id,))
+
+
+def set_poll_vote(message_id: int, user_id: int, option_index: int):
+    """Upsert -- a user can change their vote, but only ever has one active vote per poll."""
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO poll_votes (message_id, user_id, option_index) VALUES (?, ?, ?)
+            ON CONFLICT(message_id, user_id) DO UPDATE SET option_index = excluded.option_index
+        """, (message_id, user_id, option_index))
+
+
+def get_poll_vote_counts(message_id: int) -> dict:
+    """Returns {option_index: count}."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT option_index, COUNT(*) AS c FROM poll_votes WHERE message_id = ? GROUP BY option_index",
+            (message_id,),
+        ).fetchall()
+        return {r["option_index"]: r["c"] for r in rows}
