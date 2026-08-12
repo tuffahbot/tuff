@@ -85,6 +85,26 @@ COMMAND_USAGE = {
         "usage": ["?purge [amount]"],
         "example": ["?purge 50"],
     },
+    "warnings": {
+        "description": "Pull up someone's warning history.",
+        "usage": ["?warnings [member]"],
+        "example": ["?warnings @bean"],
+    },
+    "clearwarnings": {
+        "description": "Wipe someone's warnings clean.",
+        "usage": ["?clearwarnings [member]"],
+        "example": ["?clearwarnings @bean"],
+    },
+    "removewarning": {
+        "description": "Delete one specific warning by its ID.",
+        "usage": ["?removewarning [warning_id]"],
+        "example": ["?removewarning 42"],
+    },
+    "slowmode": {
+        "description": "Turn slowmode on/off for this channel.",
+        "usage": ["?slowmode [seconds]"],
+        "example": ["?slowmode 10"],
+    },
 }
 
 
@@ -295,7 +315,7 @@ class Moderation(commands.Cog):
     # ---------------- Text/prefix command versions (e.g. "?ban @user spam") ----------------
     # Same hierarchy rules and logging as the slash commands above -- these
     # just let mods type them as plain messages instead. Whatever prefix is
-    # set via COMMAND_PREFIX (default "!") is what triggers them.
+    # set via COMMAND_PREFIX (default "?") is what triggers them.
 
     def _has_access(self, member: discord.Member, **required_perms: bool) -> bool:
         if get_tier(member) > 0:
@@ -415,6 +435,39 @@ class Moderation(commands.Cog):
         except discord.Forbidden:
             pass
 
+    @commands.command(name="warnings")
+    async def warnings_text(self, ctx: commands.Context, member: discord.Member):
+        if not self._has_access(ctx.author, moderate_members=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        rows = db.get_warnings(ctx.guild.id, member.id)
+        if not rows:
+            await ctx.reply(f"{member.mention} has no warnings.", mention_author=False)
+            return
+        lines = [f"**#{r['id']}** — {r['reason']} (by <@{r['moderator_id']}>, {r['created_at']})" for r in rows]
+        await ctx.reply(embed=mod_embed(f"Warnings for {member.display_name}", "\n".join(lines)), mention_author=False)
+
+    @commands.command(name="clearwarnings")
+    async def clearwarnings_text(self, ctx: commands.Context, member: discord.Member):
+        if not self._has_access(ctx.author, manage_guild=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        if not await self._hierarchy_ok(ctx, member):
+            return
+        count = db.clear_warnings(ctx.guild.id, member.id)
+        await self._reply_and_log(ctx, mod_embed("🧹 Warnings Cleared", f"Cleared {count} warning(s) for {member.mention}."))
+
+    @commands.command(name="removewarning")
+    async def removewarning_text(self, ctx: commands.Context, warning_id: int):
+        if not self._has_access(ctx.author, manage_guild=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        removed = db.remove_warning(ctx.guild.id, warning_id)
+        if removed:
+            await self._reply_and_log(ctx, mod_embed("🧹 Warning Removed", f"Removed warning #{warning_id}."))
+        else:
+            await ctx.reply(f"No warning with ID #{warning_id} found.", mention_author=False)
+
     @commands.command(name="purge")
     async def purge_text(self, ctx: commands.Context, amount: int):
         if not self._has_access(ctx.author, manage_messages=True):
@@ -432,6 +485,18 @@ class Moderation(commands.Cog):
         embed.set_footer(text=f"By {ctx.author} ({ctx.author.id})")
         await send_log(self.bot, embed)
         await ctx.send(f"Deleted {len(deleted)} message(s).", delete_after=5)
+
+    @commands.command(name="slowmode")
+    async def slowmode_text(self, ctx: commands.Context, seconds: int):
+        if not self._has_access(ctx.author, manage_channels=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        if not 0 <= seconds <= 21600:
+            await self._deny(ctx, "Seconds must be between 0 and 21600.")
+            return
+        await ctx.channel.edit(slowmode_delay=seconds)
+        desc = "Slowmode disabled." if seconds == 0 else f"Slowmode set to {seconds} second(s)."
+        await self._reply_and_log(ctx, mod_embed("🐢 Slowmode Updated", f"{desc} ({ctx.channel.mention})"))
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         command_name = ctx.command.name if ctx.command else None
