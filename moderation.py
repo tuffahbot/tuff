@@ -231,19 +231,179 @@ class Moderation(commands.Cog):
         embed = mod_embed("🐢 Slowmode Updated", f"{desc} ({interaction.channel.mention})")
         await self._log_and_confirm(interaction, embed)
 
-    # ---------------- Error handling for this cog ----------------
+    # ---------------- Text/prefix command versions (e.g. "?ban @user spam") ----------------
+    # Same hierarchy rules and logging as the slash commands above -- these
+    # just let mods type them as plain messages instead. Whatever prefix is
+    # set via COMMAND_PREFIX (default "!") is what triggers them.
+
+    def _has_access(self, member: discord.Member, **required_perms: bool) -> bool:
+        if get_tier(member) > 0:
+            return True
+        perms = member.guild_permissions
+        return all(getattr(perms, perm_name, False) == expected for perm_name, expected in required_perms.items())
+
+    async def _deny(self, ctx: commands.Context, msg: str):
+        try:
+            await ctx.message.add_reaction("❌")
+        except discord.HTTPException:
+            pass
+        await ctx.reply(msg, mention_author=False, delete_after=8)
+
+    async def _hierarchy_ok(self, ctx: commands.Context, target: discord.Member) -> bool:
+        if can_moderate(ctx.author, target):
+            return True
+        msg = "You can't use that on yourself." if ctx.author.id == target.id else "You can't moderate someone at your rank or above."
+        await self._deny(ctx, msg)
+        return False
+
+    async def _reply_and_log(self, ctx: commands.Context, embed: discord.Embed):
+        embed.set_footer(text=f"By {ctx.author} ({ctx.author.id})")
+        await send_log(self.bot, embed)
+        try:
+            await ctx.message.add_reaction("✅")
+        except discord.HTTPException:
+            pass
+
+    @commands.command(name="kick")
+    async def kick_text(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+        if not self._has_access(ctx.author, kick_members=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        if not await self._hierarchy_ok(ctx, member):
+            return
+        try:
+            await member.send(f"You were kicked from **{ctx.guild.name}**.\nReason: {reason}")
+        except discord.Forbidden:
+            pass
+        await member.kick(reason=f"{reason} — by {ctx.author}")
+        await self._reply_and_log(ctx, mod_embed("👢 Member Kicked", f"{member.mention} was kicked.\n**Reason:** {reason}"))
+
+    @commands.command(name="ban")
+    async def ban_text(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+        if not self._has_access(ctx.author, ban_members=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        if not await self._hierarchy_ok(ctx, member):
+            return
+        try:
+            await member.send(f"You were banned from **{ctx.guild.name}**.\nReason: {reason}")
+        except discord.Forbidden:
+            pass
+        await member.ban(reason=f"{reason} — by {ctx.author}")
+        await self._reply_and_log(ctx, mod_embed("🔨 Member Banned", f"{member.mention} was banned.\n**Reason:** {reason}", discord.Color.red()))
+
+    @commands.command(name="unban")
+    async def unban_text(self, ctx: commands.Context, user_id: int):
+        if not self._has_access(ctx.author, ban_members=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        try:
+            user = await self.bot.fetch_user(user_id)
+            await ctx.guild.unban(user)
+        except (discord.NotFound, discord.HTTPException):
+            await self._deny(ctx, "That user ID isn't banned or doesn't exist.")
+            return
+        await self._reply_and_log(ctx, mod_embed("🔓 Member Unbanned", f"Unbanned **{user}**."))
+
+    @commands.command(name="timeout")
+    async def timeout_text(self, ctx: commands.Context, member: discord.Member, minutes: int, *, reason: str = "No reason provided"):
+        if not self._has_access(ctx.author, moderate_members=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        if not await self._hierarchy_ok(ctx, member):
+            return
+        if not 1 <= minutes <= 40320:
+            await self._deny(ctx, "Minutes must be between 1 and 40320 (28 days).")
+            return
+        until = discord.utils.utcnow() + timedelta(minutes=minutes)
+        await member.timeout(until, reason=f"{reason} — by {ctx.author}")
+        try:
+            await member.send(f"You're timed out in **{ctx.guild.name}** for {minutes} minute(s).\nReason: {reason}")
+        except discord.Forbidden:
+            pass
+        await self._reply_and_log(ctx, mod_embed("🔇 Member Timed Out", f"{member.mention} is timed out for {minutes} minute(s).\n**Reason:** {reason}"))
+
+    @commands.command(name="untimeout")
+    async def untimeout_text(self, ctx: commands.Context, member: discord.Member):
+        if not self._has_access(ctx.author, moderate_members=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        if not await self._hierarchy_ok(ctx, member):
+            return
+        await member.timeout(None, reason=f"Timeout removed by {ctx.author}")
+        await self._reply_and_log(ctx, mod_embed("🔊 Timeout Removed", f"Removed timeout for {member.mention}."))
+
+    @commands.command(name="warn")
+    async def warn_text(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
+        if not self._has_access(ctx.author, moderate_members=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        if not await self._hierarchy_ok(ctx, member):
+            return
+        warning_id = db.add_warning(ctx.guild.id, member.id, ctx.author.id, reason)
+        count = len(db.get_warnings(ctx.guild.id, member.id))
+        await self._reply_and_log(ctx, mod_embed("⚠️ Member Warned", f"{member.mention} was warned (#{warning_id}).\n**Reason:** {reason}\n**Total warnings:** {count}"))
+        try:
+            await member.send(f"You were warned in **{ctx.guild.name}**.\nReason: {reason}")
+        except discord.Forbidden:
+            pass
+
+    @commands.command(name="purge")
+    async def purge_text(self, ctx: commands.Context, amount: int):
+        if not self._has_access(ctx.author, manage_messages=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        if not 1 <= amount <= 1000:
+            await self._deny(ctx, "Amount must be between 1 and 1000.")
+            return
+        try:
+            await ctx.message.delete()
+        except discord.HTTPException:
+            pass
+        deleted = await ctx.channel.purge(limit=amount)
+        embed = mod_embed("🧹 Messages Purged", f"Deleted {len(deleted)} message(s) in {ctx.channel.mention}.")
+        embed.set_footer(text=f"By {ctx.author} ({ctx.author.id})")
+        await send_log(self.bot, embed)
+        await ctx.send(f"Deleted {len(deleted)} message(s).", delete_after=5)
+
+    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.MemberNotFound):
+            await self._deny(ctx, "Couldn't find that member.")
+        elif isinstance(error, commands.MissingRequiredArgument):
+            await self._deny(ctx, f"Missing argument: `{error.param.name}`.")
+        elif isinstance(error, commands.BadArgument):
+            await self._deny(ctx, "Check your arguments -- e.g. minutes/amount need to be plain numbers.")
+        else:
+            original = getattr(error, "original", error)
+            if isinstance(original, discord.Forbidden):
+                await self._deny(ctx, "Discord won't let me do that to them (role position, or they have Administrator).")
+            else:
+                print(f"Prefix mod command error: {error}")
+
+    # ---------------- Error handling for slash commands in this cog ----------------
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        # app_commands wraps exceptions raised inside a command as
+        # CommandInvokeError, with the real exception in .original --
+        # unwrap it or isinstance checks below never match.
+        original = getattr(error, "original", error)
+
         if isinstance(error, (app_commands.MissingPermissions, app_commands.CheckFailure)):
             await interaction.response.send_message(
                 "You don't have permission to use this command (need the Owner/Administrator/Moderator role or the relevant Discord permission).",
                 ephemeral=True,
             )
-        elif isinstance(error, discord.Forbidden):
-            await interaction.response.send_message("I don't have permission to do that (check my role position).", ephemeral=True)
+        elif isinstance(original, discord.Forbidden):
+            await interaction.response.send_message(
+                "Discord won't let me do that to them. Two likely reasons: my role needs to be "
+                "moved above theirs in Server Settings → Roles, or -- if this was a timeout -- "
+                "Discord never allows timing out anyone with the Administrator permission, no "
+                "matter who's asking or how the roles are ordered.",
+                ephemeral=True,
+            )
         else:
             if not interaction.response.is_done():
-                await interaction.response.send_message(f"Error: {error}", ephemeral=True)
+                await interaction.response.send_message(f"Error: {original}", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
