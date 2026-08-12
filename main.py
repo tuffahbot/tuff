@@ -18,7 +18,7 @@ logging.basicConfig(
 log = logging.getLogger("bot")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-PREFIX = os.getenv("COMMAND_PREFIX", "!")
+PREFIX = os.getenv("COMMAND_PREFIX", "?")
 
 intents = discord.Intents.default()
 intents.message_content = True   # required for XP-on-message, prefix commands, and deleted/edited message logging
