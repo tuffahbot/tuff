@@ -188,12 +188,12 @@ def _ffmpeg_opts_for(song: Song) -> dict:
     return opts
 
 
-async def find_autoplay_song(last_song: Song, loop: asyncio.AbstractEventLoop) -> Song | None:
-    """Finds a related track using YouTube's own auto-generated 'Mix' playlist
-    for whatever just finished, so autoplay stays roughly on-genre instead of
-    picking something totally unrelated. Returns None if there's nothing to
-    go on (e.g. the last song came from SoundCloud) or nothing was found."""
-    if last_song.source != "youtube" or not last_song.video_id:
+async def _find_via_mix(last_song: Song, loop: asyncio.AbstractEventLoop) -> Song | None:
+    """Tries YouTube's own auto-generated 'Mix'/Radio playlist for whatever
+    just finished. Best quality when it works, but -- like regular playback
+    -- YouTube can block this from a datacenter IP without cookies, so it
+    silently returns None on any failure rather than raising."""
+    if not last_song.video_id:
         return None
 
     mix_url = f"https://www.youtube.com/watch?v={last_song.video_id}&list=RD{last_song.video_id}"
@@ -217,10 +217,58 @@ async def find_autoplay_song(last_song: Song, loop: asyncio.AbstractEventLoop) -
     pick = random.choice(candidates)
     video_url = f"https://www.youtube.com/watch?v={pick['id']}"
     try:
-        song = await Song.from_query(video_url, last_song.requester, loop)
+        return await Song.from_query(video_url, last_song.requester, loop)
     except Exception:
         return None
-    song.autoplay = True
+
+
+_CLUTTER_RE = re.compile(
+    r"(?i)\(.*?\)|\[.*?\]|\b(official( music)? video|official audio|lyrics?|visualizer|hd|4k)\b"
+)
+
+
+async def _find_via_search(last_song: Song, loop: asyncio.AbstractEventLoop) -> Song | None:
+    """Fallback when the Mix trick above fails or isn't available (e.g. the
+    last song came from SoundCloud): searches YouTube using the last song's
+    title with the clutter stripped out, and picks a different result than
+    the one that just played. Less precisely 'related' than a real Mix, but
+    uses the exact same search path as a normal /play, so it basically
+    always works."""
+    seed = _CLUTTER_RE.sub("", last_song.title).strip() or last_song.title
+
+    def _fetch_candidates():
+        opts = dict(YTDL_OPTS)
+        opts["noplaylist"] = True
+        with yt_dlp.YoutubeDL(opts) as search_ydl:
+            data = search_ydl.extract_info(f"ytsearch10:{seed}", download=False)
+            entries = [e for e in (data.get("entries") or []) if e and e.get("id") != last_song.video_id]
+            return entries
+
+    try:
+        candidates = await loop.run_in_executor(None, _fetch_candidates)
+    except Exception:
+        return None
+    if not candidates:
+        return None
+
+    pick = random.choice(candidates)
+    try:
+        return await Song.from_query(pick.get("webpage_url") or pick.get("url") or pick["id"], last_song.requester, loop)
+    except Exception:
+        return None
+
+
+async def find_autoplay_song(last_song: Song, loop: asyncio.AbstractEventLoop) -> Song | None:
+    """Finds a track to keep autoplay going after `last_song`. Tries the
+    higher-quality Mix-based match first, falls back to a plain search if
+    that fails for any reason (blocked, no video_id, SoundCloud source)."""
+    song = None
+    if last_song.source == "youtube":
+        song = await _find_via_mix(last_song, loop)
+    if song is None:
+        song = await _find_via_search(last_song, loop)
+    if song is not None:
+        song.autoplay = True
     return song
 
 
@@ -266,6 +314,7 @@ class MusicControlView(discord.ui.View):
         state.queue.clear()
         state.loop_song = False
         state.current = None  # clear first so autoplay doesn't immediately kick back in
+        state._prefetched_song = None
         if state.voice_client:
             state.voice_client.stop()
         await interaction.response.send_message("⏹️ Stopped and cleared the queue.", ephemeral=True)
@@ -302,6 +351,8 @@ class GuildMusicState:
         self.loop_song = False
         self.autoplay = True  # keep playing related songs once the queue runs out
         self.text_channel: discord.abc.Messageable | None = None  # set by /play, used for announcements/errors
+        self._prefetched_song: Song | None = None  # autoplay pick resolved ahead of time, for an instant transition
+        self._prefetching = False
 
     def play_next(self, error=None):
         if error:
@@ -319,10 +370,19 @@ class GuildMusicState:
 
         if not self.queue:
             if self.autoplay and self.current:
-                asyncio.run_coroutine_threadsafe(self._autoplay_next(), self.bot.loop)
+                if self._prefetched_song is not None:
+                    # Already resolved ahead of time -- play it immediately,
+                    # no network wait, no gap.
+                    self.queue.append(self._prefetched_song)
+                    self._prefetched_song = None
+                else:
+                    # Not ready yet (song ended before the prefetch finished,
+                    # or this is the very first autoplay hop) -- resolve now.
+                    asyncio.run_coroutine_threadsafe(self._autoplay_next(), self.bot.loop)
+                    return
+            else:
+                self.current = None
                 return
-            self.current = None
-            return
 
         self.current = self.queue.pop(0)
         source = discord.PCMVolumeTransformer(
@@ -332,6 +392,12 @@ class GuildMusicState:
 
         if self.text_channel:
             asyncio.run_coroutine_threadsafe(self._announce_now_playing(), self.bot.loop)
+
+        # With nothing else queued behind this song, start resolving the
+        # NEXT autoplay pick now, in the background, so it's ready the
+        # instant this one ends instead of only starting the search then.
+        if self.autoplay and not self.queue and self._prefetched_song is None and not self._prefetching:
+            asyncio.run_coroutine_threadsafe(self._prefetch_autoplay(), self.bot.loop)
 
     async def _announce_now_playing(self):
         if not self.text_channel or not self.current:
@@ -353,6 +419,19 @@ class GuildMusicState:
             await self.text_channel.send(embed=embed, view=MusicControlView())
         except discord.Forbidden:
             pass
+
+    async def _prefetch_autoplay(self):
+        self._prefetching = True
+        try:
+            song = await find_autoplay_song(self.current, self.bot.loop) if self.current else None
+        except Exception:
+            song = None
+        finally:
+            self._prefetching = False
+        # Only keep it if nothing changed underneath us while we were
+        # searching (e.g. someone ran /stop or queued a real song).
+        if self.current is not None and not self.queue:
+            self._prefetched_song = song
 
     async def _autoplay_next(self):
         last = self.current
@@ -404,6 +483,7 @@ class Music(commands.Cog):
                 state.voice_client = None
                 state.queue.clear()
                 state.current = None
+                state._prefetched_song = None
             return
 
         # Auto-leave if everyone else has left the bot's voice channel.
@@ -415,6 +495,7 @@ class Music(commands.Cog):
                     if state.voice_client and state.voice_client.channel and all(m.bot for m in state.voice_client.channel.members):
                         state.queue.clear()
                         state.current = None  # clear first so autoplay doesn't fire as we're leaving
+                        state._prefetched_song = None
                         await state.voice_client.disconnect()
                         state.voice_client = None
 
@@ -550,6 +631,7 @@ class Music(commands.Cog):
         state.queue.clear()
         state.loop_song = False
         state.current = None  # clear first so autoplay doesn't immediately kick back in
+        state._prefetched_song = None
         if state.voice_client:
             state.voice_client.stop()
         await interaction.response.send_message(embed=music_embed("⏹️ Stopped and cleared the queue."))
@@ -560,6 +642,7 @@ class Music(commands.Cog):
         if state.voice_client:
             state.queue.clear()
             state.current = None  # clear first so autoplay doesn't fire as we're leaving
+            state._prefetched_song = None
             await state.voice_client.disconnect()
             state.voice_client = None
         await interaction.response.send_message(embed=music_embed("👋 Disconnected."))
