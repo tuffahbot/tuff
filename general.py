@@ -24,6 +24,11 @@ HELP_SECTIONS = {
         "/giveaway end <message_id> — [admin] end early & pick winners",
         "/giveaway reroll <message_id> — [admin] reroll winners",
     ],
+    "📊 Polls": [
+        "/poll create <question> <options> [duration] — options comma-separated (2-10), duration e.g. `30m`, `2h`, `1d`",
+        "/poll end <message_id> — end a poll early (creator or mod)",
+        "Vote by clicking the buttons — results update live",
+    ],
     "🔊 Voice": [
         "Join the **Join to Create** voice channel to get your own temporary VC",
         "It's deleted automatically once everyone leaves",
