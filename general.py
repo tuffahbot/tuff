@@ -45,14 +45,25 @@ class General(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="Everything this bot can do")
-    async def help(self, interaction: discord.Interaction):
-        embed = discord.Embed(title="Bot Commands", color=discord.Color.blurple())
-        if interaction.guild and interaction.guild.icon:
-            embed.set_thumbnail(url=interaction.guild.icon.url)
+    def _help_embed(self, guild: discord.Guild = None) -> discord.Embed:
+        embed = discord.Embed(
+            title="Bot Commands",
+            description="Every command below works either as a slash command (`/command`) or typed out with `?` (`?command`).",
+            color=discord.Color.blurple(),
+        )
+        if guild and guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
         for section, lines in HELP_SECTIONS.items():
             embed.add_field(name=section, value="\n".join(lines), inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return embed
+
+    @app_commands.command(name="help", description="Everything this bot can do")
+    async def help(self, interaction: discord.Interaction):
+        await interaction.response.send_message(embed=self._help_embed(interaction.guild), ephemeral=True)
+
+    @commands.command(name="help")
+    async def help_text(self, ctx: commands.Context):
+        await ctx.reply(embed=self._help_embed(ctx.guild), mention_author=False)
 
     @app_commands.command(name="say", description="Make the bot say something")
     @app_commands.describe(message="What to say", channel="Where to say it (defaults to this channel)")
@@ -69,9 +80,31 @@ class General(commands.Cog):
             return
         await interaction.response.send_message(f"Sent in {target.mention}.", ephemeral=True)
 
+    @commands.command(name="say")
+    async def say_text(self, ctx: commands.Context, channel: discord.TextChannel = None, *, message: str):
+        if ctx.author.id != AUTHORIZED_SAY_USER_ID:
+            return  # stay quiet -- don't reveal the command exists to anyone else
+        try:
+            await ctx.message.delete()
+        except discord.HTTPException:
+            pass
+        target = channel or ctx.channel
+        try:
+            await target.send(message)
+        except discord.Forbidden:
+            await ctx.author.send(f"I don't have permission to send messages in {target.mention}.")
+
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if not interaction.response.is_done():
             await interaction.response.send_message(f"Error: {error}", ephemeral=True)
+
+    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        if ctx.command and ctx.command.name == "say":
+            return  # silent on purpose, see say_text
+        if isinstance(error, commands.MissingRequiredArgument):
+            await ctx.reply(f"Missing argument: `{error.param.name}`.", mention_author=False)
+        else:
+            print(f"General prefix command error: {error}")
 
 
 async def setup(bot: commands.Bot):
