@@ -54,11 +54,18 @@ async def on_ready():
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         return
+    # If the command's cog (e.g. Moderation, Emoji) or the command itself
+    # already has its own error handler, let that handle it and don't also
+    # reply here -- otherwise commands like ?ban end up sending two replies.
+    if ctx.cog and ctx.cog.has_error_handler():
+        return
+    if ctx.command and ctx.command.has_error_handler():
+        return
     if isinstance(error, commands.MissingPermissions):
         await ctx.send("You don't have permission to do that.")
         return
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"Missing argument: `{error.param.name}`. Check `!help {ctx.command}`.")
+        await ctx.send(f"Missing argument: `{error.param.name}`. Check `{ctx.prefix}help {ctx.command}`.")
         return
     log.exception("Unhandled command error", exc_info=error)
     try:
