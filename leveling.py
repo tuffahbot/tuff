@@ -167,14 +167,9 @@ class Leveling(commands.Cog):
             except discord.Forbidden:
                 pass
 
-    @app_commands.command(name="rank", description="Check your rank, or someone else's")
-    @app_commands.describe(member="Leave blank for yourself")
-    async def rank(self, interaction: discord.Interaction, member: discord.Member = None):
-        target = member or interaction.user
-        is_self = target.id == interaction.user.id
-
-        xp, level = db.get_user_xp(interaction.guild_id, target.id)
-        position = db.get_rank(interaction.guild_id, target.id)
+    def _rank_embed(self, guild: discord.Guild, target: discord.Member) -> discord.Embed:
+        xp, level = db.get_user_xp(guild.id, target.id)
+        position = db.get_rank(guild.id, target.id)
 
         current_floor = xp_for_level(level)
         next_floor = xp_for_level(level + 1)
@@ -196,52 +191,44 @@ class Leveling(commands.Cog):
         )
         embed.set_thumbnail(url=target.display_avatar.url)
         embed.set_footer(text="Made by Mercyy")
+        return embed
 
-        await interaction.response.send_message(embed=embed, ephemeral=is_self)
-
-    @app_commands.command(name="leaderboard", description="Who's at the top of the server")
-    async def leaderboard(self, interaction: discord.Interaction):
-        rows = db.get_leaderboard(interaction.guild_id, limit=10)
+    def _leaderboard_embed(self, guild: discord.Guild) -> discord.Embed | None:
+        rows = db.get_leaderboard(guild.id, limit=10)
         if not rows:
-            await interaction.response.send_message("No one has earned XP yet.")
-            return
-
+            return None
         lines = []
         for i, row in enumerate(rows, start=1):
-            member = interaction.guild.get_member(row["user_id"])
+            member = guild.get_member(row["user_id"])
             name = member.display_name if member else f"User {row['user_id']}"
             lines.append(f"{i}. {name} - lvl {row['level']} ({row['xp']} XP)")
 
         embed = discord.Embed(
             title="XP leaderboard",
             description=(
-                f"{interaction.guild.name} · Top 10\n\n"
+                f"{guild.name} · Top 10\n\n"
                 + "\n".join(lines)
                 + "\n\n*May change with each XP message.*"
             ),
             color=discord.Color.gold(),
         )
         embed.set_footer(text="Made by Mercyy")
-        await interaction.response.send_message(embed=embed)
+        return embed
 
-    @app_commands.command(name="setuplevelroles", description="[Admin] Set up the level roles if they're missing")
-    @app_commands.checks.has_permissions(manage_roles=True)
-    async def setuplevelroles(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
+    async def _setup_level_roles(self, guild: discord.Guild, requester) -> discord.Embed:
         created, existing = [], []
         for level, role_name in LEVEL_ROLES.items():
-            role = discord.utils.get(interaction.guild.roles, name=role_name)
+            role = discord.utils.get(guild.roles, name=role_name)
             if role is not None:
                 existing.append(role_name)
                 continue
-            role = await interaction.guild.create_role(
+            role = await guild.create_role(
                 name=role_name,
                 color=LEVEL_COLORS.get(level, discord.Color.default()),
                 permissions=LEVEL_PERMISSIONS.get(level, discord.Permissions.none()),
                 hoist=False,
                 mentionable=False,
-                reason=f"Level role setup requested by {interaction.user}",
+                reason=f"Level role setup requested by {requester}",
             )
             created.append(role_name)
 
@@ -259,47 +246,111 @@ class Leveling(commands.Cog):
             ),
             inline=False,
         )
+        return embed
+
+    async def _apply_xp_change(self, guild: discord.Guild, member: discord.Member, amount: int) -> tuple[discord.Embed, int, int]:
+        """Returns (embed, old_level, new_level). amount can be negative."""
+        xp, level = db.get_user_xp(guild.id, member.id)
+        xp = max(0, xp + amount)
+        new_level = level_from_xp(xp)
+        db.set_user_xp(guild.id, member.id, xp, new_level)
+        verb = "Gave" if amount >= 0 else "Removed"
+        color = discord.Color.green() if amount >= 0 else discord.Color.orange()
+        embed = discord.Embed(
+            description=f"{verb} **{abs(amount)} XP** {'to' if amount >= 0 else 'from'} {member.mention}. Now at **{xp} XP** (level {new_level}).",
+            color=color,
+        )
+        return embed, level, new_level
+
+    async def _announce_role_unlock(self, guild: discord.Guild, member: discord.Member, new_level: int, channel: discord.abc.Messageable):
+        role_name = LEVEL_ROLES.get(new_level)
+        if not role_name:
+            return
+        role = discord.utils.get(guild.roles, name=role_name)
+        me = guild.me
+        if role and me.guild_permissions.manage_roles and role < me.top_role:
+            try:
+                await member.add_roles(role, reason=f"Reached level {new_level}")
+                await channel.send(f"🔓 {member.mention} unlocked the **{role.name}** role!")
+            except discord.Forbidden:
+                pass
+
+    @app_commands.command(name="rank", description="Check your rank, or someone else's")
+    @app_commands.describe(member="Leave blank for yourself")
+    async def rank(self, interaction: discord.Interaction, member: discord.Member = None):
+        target = member or interaction.user
+        is_self = target.id == interaction.user.id
+        await interaction.response.send_message(embed=self._rank_embed(interaction.guild, target), ephemeral=is_self)
+
+    @commands.command(name="rank")
+    async def rank_text(self, ctx: commands.Context, member: discord.Member = None):
+        target = member or ctx.author
+        await ctx.reply(embed=self._rank_embed(ctx.guild, target), mention_author=False)
+
+    @app_commands.command(name="leaderboard", description="Who's at the top of the server")
+    async def leaderboard(self, interaction: discord.Interaction):
+        embed = self._leaderboard_embed(interaction.guild)
+        if embed is None:
+            await interaction.response.send_message("No one has earned XP yet.")
+            return
+        await interaction.response.send_message(embed=embed)
+
+    @commands.command(name="leaderboard")
+    async def leaderboard_text(self, ctx: commands.Context):
+        embed = self._leaderboard_embed(ctx.guild)
+        if embed is None:
+            await ctx.reply("No one has earned XP yet.", mention_author=False)
+            return
+        await ctx.reply(embed=embed, mention_author=False)
+
+    @app_commands.command(name="setuplevelroles", description="[Admin] Set up the level roles if they're missing")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def setuplevelroles(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        embed = await self._setup_level_roles(interaction.guild, interaction.user)
         await interaction.followup.send(embed=embed)
+
+    @commands.command(name="setuplevelroles")
+    @commands.has_permissions(manage_roles=True)
+    async def setuplevelroles_text(self, ctx: commands.Context):
+        embed = await self._setup_level_roles(ctx.guild, ctx.author)
+        await ctx.reply(embed=embed, mention_author=False)
 
     @app_commands.command(name="give_xp", description="[Admin] Hand someone some XP")
     @app_commands.describe(member="Who", amount="How much")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def give_xp(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000]):
-        xp, level = db.get_user_xp(interaction.guild_id, member.id)
-        xp = max(0, xp + amount)
-        new_level = level_from_xp(xp)
-        db.set_user_xp(interaction.guild_id, member.id, xp, new_level)
-        embed = discord.Embed(
-            description=f"Gave **{amount} XP** to {member.mention}. Now at **{xp} XP** (level {new_level}).",
-            color=discord.Color.green(),
-        )
+        embed, level, new_level = await self._apply_xp_change(interaction.guild, member, amount)
         await interaction.response.send_message(embed=embed)
-
         if new_level > level:
-            role_name = LEVEL_ROLES.get(new_level)
-            if role_name:
-                role = discord.utils.get(interaction.guild.roles, name=role_name)
-                me = interaction.guild.me
-                if role and me.guild_permissions.manage_roles and role < me.top_role:
-                    try:
-                        await member.add_roles(role, reason=f"Reached level {new_level}")
-                        await interaction.channel.send(f"🔓 {member.mention} unlocked the **{role.name}** role!")
-                    except discord.Forbidden:
-                        pass
+            await self._announce_role_unlock(interaction.guild, member, new_level, interaction.channel)
+
+    @commands.command(name="give_xp")
+    @commands.has_permissions(manage_guild=True)
+    async def give_xp_text(self, ctx: commands.Context, member: discord.Member, amount: int):
+        if not 1 <= amount <= 1_000_000:
+            await ctx.reply("Amount must be between 1 and 1,000,000.", mention_author=False)
+            return
+        embed, level, new_level = await self._apply_xp_change(ctx.guild, member, amount)
+        await ctx.reply(embed=embed, mention_author=False)
+        if new_level > level:
+            await self._announce_role_unlock(ctx.guild, member, new_level, ctx.channel)
 
     @app_commands.command(name="remove_xp", description="[Admin] Take XP away from someone")
     @app_commands.describe(member="Who", amount="How much")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def remove_xp(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000]):
-        xp, level = db.get_user_xp(interaction.guild_id, member.id)
-        xp = max(0, xp - amount)
-        new_level = level_from_xp(xp)
-        db.set_user_xp(interaction.guild_id, member.id, xp, new_level)
-        embed = discord.Embed(
-            description=f"Removed **{amount} XP** from {member.mention}. Now at **{xp} XP** (level {new_level}).",
-            color=discord.Color.orange(),
-        )
+        embed, _, _ = await self._apply_xp_change(interaction.guild, member, -amount)
         await interaction.response.send_message(embed=embed)
+
+    @commands.command(name="remove_xp")
+    @commands.has_permissions(manage_guild=True)
+    async def remove_xp_text(self, ctx: commands.Context, member: discord.Member, amount: int):
+        if not 1 <= amount <= 1_000_000:
+            await ctx.reply("Amount must be between 1 and 1,000,000.", mention_author=False)
+            return
+        embed, _, _ = await self._apply_xp_change(ctx.guild, member, -amount)
+        await ctx.reply(embed=embed, mention_author=False)
 
     @app_commands.command(name="resetxp", description="[Admin] Wipe every member's XP — careful with this one")
     @app_commands.checks.has_permissions(administrator=True)
@@ -311,12 +362,34 @@ class Leveling(commands.Cog):
             ephemeral=True,
         )
 
+    @commands.command(name="resetxp")
+    @commands.has_permissions(administrator=True)
+    async def resetxp_text(self, ctx: commands.Context):
+        view = ConfirmResetView(ctx.author.id, ctx.guild.id)
+        await ctx.reply(
+            "⚠️ This will wipe **all** XP and levels for **every member** in this server. This can't be undone.",
+            view=view,
+            mention_author=False,
+        )
+
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message("You don't have permission to use this command.", ephemeral=True)
         else:
             if not interaction.response.is_done():
                 await interaction.response.send_message(f"Error: {error}", ephemeral=True)
+
+    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.reply("You don't have permission to use this command.", mention_author=False)
+        elif isinstance(error, commands.MemberNotFound):
+            await ctx.reply("Couldn't find that member.", mention_author=False)
+        elif isinstance(error, commands.MissingRequiredArgument):
+            await ctx.reply(f"Missing argument: `{error.param.name}`.", mention_author=False)
+        elif isinstance(error, commands.BadArgument):
+            await ctx.reply("Check your arguments -- amount needs to be a plain number.", mention_author=False)
+        else:
+            print(f"Leveling prefix command error: {error}")
 
 
 async def setup(bot: commands.Bot):
