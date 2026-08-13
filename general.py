@@ -35,6 +35,14 @@ HELP_SECTIONS = {
     ],
     "🕵️ Utility": [
         "/snipe — show the last deleted message in this channel",
+        "/autorole set <role> — [admin] auto-assign a role to new members",
+        "/autorole remove — [admin] turn autorole off",
+        "/autorole view — see the current autorole",
+        "/rolegive <member> <role> — [admin] give someone a role",
+        "/roleremove <member> <role> — [admin] take a role away",
+    ],
+    "🎈 Fun": [
+        "/ship <member> [member2] — see how compatible two people are (defaults to you)",
     ],
     "🛡️ Moderation (mod role or matching Discord permission required)": [
         "/warn, /warnings, /clearwarnings, /removewarning",
@@ -131,13 +139,43 @@ class General(commands.Cog):
             # e.g. the replied-to message got deleted between typing and sending
             await target.send(message)
 
+    async def _do_sync(self, guild: discord.Guild, scope: str) -> str:
+        if scope == "global":
+            synced = await self.bot.tree.sync()
+            return f"🌐 Synced {len(synced)} command(s) globally. Discord can take up to an hour to push global updates out to every server -- use `guild` scope for an instant check in this server."
+        else:
+            self.bot.tree.copy_global_to(guild=guild)
+            synced = await self.bot.tree.sync(guild=guild)
+            return f"⚡ Synced {len(synced)} command(s) instantly to **{guild.name}**."
+
+    @app_commands.command(name="sync", description="[Owner] Force re-sync slash commands")
+    @app_commands.describe(scope="'guild' updates this server instantly, 'global' updates everywhere (slower)")
+    @app_commands.choices(scope=[
+        app_commands.Choice(name="This server (instant)", value="guild"),
+        app_commands.Choice(name="Global (up to ~1hr to appear)", value="global"),
+    ])
+    async def sync(self, interaction: discord.Interaction, scope: app_commands.Choice[str] = None):
+        if interaction.user.id != AUTHORIZED_SAY_USER_ID:
+            await interaction.response.send_message("You can't use this command.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        result = await self._do_sync(interaction.guild, scope.value if scope else "guild")
+        await interaction.followup.send(result, ephemeral=True)
+
+    @commands.command(name="sync")
+    async def sync_text(self, ctx: commands.Context, scope: str = "guild"):
+        if ctx.author.id != AUTHORIZED_SAY_USER_ID:
+            return  # stay quiet, same as ?say
+        result = await self._do_sync(ctx.guild, scope if scope == "global" else "guild")
+        await ctx.reply(result, mention_author=False)
+
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if not interaction.response.is_done():
             await interaction.response.send_message(f"Error: {error}", ephemeral=True)
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
-        if ctx.command and ctx.command.name == "say":
-            return  # silent on purpose, see say_text
+        if ctx.command and ctx.command.name in ("say", "sync"):
+            return  # silent on purpose, see say_text/sync_text
         if isinstance(error, commands.MissingRequiredArgument):
             await ctx.reply(f"Missing argument: `{error.param.name}`.", mention_author=False)
         else:
