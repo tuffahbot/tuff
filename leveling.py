@@ -145,9 +145,13 @@ class Leveling(commands.Cog):
         bar = "🟩" * bar_filled + "⬛" * (12 - bar_filled)
 
         embed = discord.Embed(
-            title=f"🎉 Level {new_level}!",
-            description=f"You leveled up in **{message.guild.name}**!",
-            color=LEVEL_COLORS.get(new_level, discord.Color.gold()),
+            title="Level up",
+            description=(
+                f"You reached **level {new_level}** on **{message.guild.name}**!\n"
+                f"**Before** · {new_level - 1}\n"
+                f"**Server** · {message.guild.name} (`{message.guild.id}`)"
+            ),
+            color=LEVEL_COLORS.get(new_level, discord.Color.blurple()),
             timestamp=discord.utils.utcnow(),
         )
         embed.set_thumbnail(url=message.author.display_avatar.url)
@@ -161,10 +165,7 @@ class Leveling(commands.Cog):
                 value=perks or "New role!",
                 inline=False,
             )
-        if message.guild.icon:
-            embed.set_footer(text=message.guild.name, icon_url=message.guild.icon.url)
-        else:
-            embed.set_footer(text=message.guild.name)
+        embed.add_field(name="\u200b", value="*Made by **Mercyy** for **Friends***", inline=False)
 
         try:
             await message.author.send(embed=embed)
