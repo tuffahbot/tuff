@@ -136,14 +136,6 @@ class Leveling(commands.Cog):
                 except discord.Forbidden:
                     pass
 
-        xp, _ = db.get_user_xp(message.guild.id, message.author.id)
-        current_floor = xp_for_level(new_level)
-        next_floor = xp_for_level(new_level + 1)
-        progress = xp - current_floor
-        needed = next_floor - current_floor
-        bar_filled = int((progress / needed) * 12) if needed else 0
-        bar = "🟩" * bar_filled + "⬛" * (12 - bar_filled)
-
         embed = discord.Embed(
             title="Level up",
             description=(
@@ -151,24 +143,15 @@ class Leveling(commands.Cog):
                 f"**Before** · {new_level - 1}\n"
                 f"**Server** · {message.guild.name} (`{message.guild.id}`)"
             ),
-            color=LEVEL_COLORS.get(new_level, discord.Color.blurple()),
-            timestamp=discord.utils.utcnow(),
+            color=discord.Color.blurple(),
         )
-        embed.set_thumbnail(url=message.author.display_avatar.url)
-        embed.add_field(name="Total XP", value=f"{xp:,}", inline=True)
-        embed.add_field(name="Progress to Next Level", value=f"{progress:,} / {needed:,}", inline=True)
-        embed.add_field(name="\u200b", value=bar, inline=False)
-        if role_unlocked:
-            perks = LEVEL_PERK_DESCRIPTIONS.get(new_level)
-            embed.add_field(
-                name=f"🔓 Unlocked: {role_unlocked.name}",
-                value=perks or "New role!",
-                inline=False,
-            )
         embed.add_field(name="\u200b", value="*Made by **Mercyy** for **Friends***", inline=False)
 
         try:
             await message.author.send(embed=embed)
+            if role_unlocked:
+                perks = LEVEL_PERK_DESCRIPTIONS.get(new_level)
+                await message.author.send(f"🔓 You also unlocked the **{role_unlocked.name}** role!" + (f" ({perks})" if perks else ""))
         except discord.Forbidden:
             # DMs closed -- fall back to a quiet channel ping so it isn't lost
             try:
