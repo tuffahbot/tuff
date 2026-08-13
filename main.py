@@ -38,6 +38,8 @@ STARTUP_EXTENSIONS = (
     "emoji",
     "autorole",
     "polls",
+    "roles",
+    "fun",
 )
 
 
