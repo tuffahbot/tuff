@@ -43,6 +43,22 @@ def mod_embed(title: str, description: str, color=discord.Color.orange()) -> dis
     return discord.Embed(title=title, description=description, color=color, timestamp=discord.utils.utcnow())
 
 
+def warning_dm_embed(guild: discord.Guild, moderator, reason: str, warning_id: int) -> discord.Embed:
+    """The card DMed to the warned member -- matches the reference bot's Warning card layout."""
+    embed = discord.Embed(
+        title=f"Warning · {guild.name}",
+        description=(
+            f"**Reason**\n{reason}\n\n"
+            f"**Issued by**\n{moderator} · {moderator.mention}\n\n"
+            f"*Warn ID · `{warning_id}`*\n\n"
+            "If you think this is a mistake, open a ticket or contact staff."
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.add_field(name="\u200b", value="*Made by **Mercyy** for **Friends***", inline=False)
+    return embed
+
+
 # ---------------------------------------------------------------------------
 # Dyno-style "you used this command wrong" help cards. Shown automatically
 # whenever someone's missing a required argument (or gives a bad one) on a
@@ -182,7 +198,7 @@ class Moderation(commands.Cog):
         embed = mod_embed("⚠️ Member Warned", f"{member.mention} was warned (#{warning_id}).\n**Reason:** {reason}\n**Total warnings:** {count}")
         await self._log_and_confirm(interaction, embed)
         try:
-            await member.send(f"You were warned in **{interaction.guild.name}**.\nReason: {reason}")
+            await member.send(embed=warning_dm_embed(interaction.guild, interaction.user, reason, warning_id))
         except discord.Forbidden:
             pass
 
@@ -431,7 +447,7 @@ class Moderation(commands.Cog):
         count = len(db.get_warnings(ctx.guild.id, member.id))
         await self._reply_and_log(ctx, mod_embed("⚠️ Member Warned", f"{member.mention} was warned (#{warning_id}).\n**Reason:** {reason}\n**Total warnings:** {count}"))
         try:
-            await member.send(f"You were warned in **{ctx.guild.name}**.\nReason: {reason}")
+            await member.send(embed=warning_dm_embed(ctx.guild, ctx.author, reason, warning_id))
         except discord.Forbidden:
             pass
 
