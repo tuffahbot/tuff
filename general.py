@@ -71,15 +71,36 @@ class General(commands.Cog):
         await ctx.reply(embed=self._help_embed(ctx.guild), mention_author=False)
 
     @app_commands.command(name="say", description="Make the bot say something")
-    @app_commands.describe(message="What to say", channel="Where to say it (defaults to this channel)")
-    async def say(self, interaction: discord.Interaction, message: str, channel: discord.TextChannel = None):
+    @app_commands.describe(
+        message="What to say",
+        channel="Where to say it (defaults to this channel)",
+        reply_to="Message ID to reply to (must be in the target channel)",
+    )
+    async def say(self, interaction: discord.Interaction, message: str, channel: discord.TextChannel = None, reply_to: str = None):
         if interaction.user.id != AUTHORIZED_SAY_USER_ID:
             await interaction.response.send_message("You can't use this command.", ephemeral=True)
             return
 
         target = channel or interaction.channel
+
+        reference = None
+        if reply_to:
+            try:
+                reply_id = int(reply_to)
+            except ValueError:
+                await interaction.response.send_message("`reply_to` needs to be a message ID (a number).", ephemeral=True)
+                return
+            try:
+                reference = await target.fetch_message(reply_id)
+            except discord.NotFound:
+                await interaction.response.send_message(f"Couldn't find that message in {target.mention}.", ephemeral=True)
+                return
+            except discord.Forbidden:
+                await interaction.response.send_message(f"I don't have permission to read messages in {target.mention}.", ephemeral=True)
+                return
+
         try:
-            await target.send(message)
+            await target.send(message, reference=reference, mention_author=False)
         except discord.Forbidden:
             await interaction.response.send_message(f"I don't have permission to send messages in {target.mention}.", ephemeral=True)
             return
@@ -89,15 +110,26 @@ class General(commands.Cog):
     async def say_text(self, ctx: commands.Context, channel: discord.TextChannel = None, *, message: str):
         if ctx.author.id != AUTHORIZED_SAY_USER_ID:
             return  # stay quiet -- don't reveal the command exists to anyone else
+
+        # If the ?say command itself was sent as a reply to another message,
+        # the bot's message replies to that same one -- only really usable when
+        # not also redirecting to a different channel, since replies are per-channel.
+        reference = None
+        if ctx.message.reference and (channel is None or channel.id == ctx.channel.id):
+            reference = ctx.message.reference
+
         try:
             await ctx.message.delete()
         except discord.HTTPException:
             pass
         target = channel or ctx.channel
         try:
-            await target.send(message)
+            await target.send(message, reference=reference, mention_author=False)
         except discord.Forbidden:
             await ctx.author.send(f"I don't have permission to send messages in {target.mention}.")
+        except discord.HTTPException:
+            # e.g. the replied-to message got deleted between typing and sending
+            await target.send(message)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if not interaction.response.is_done():
