@@ -30,7 +30,7 @@ QUESTIONS = [
     ("Dealing with Backlash", "A member starts publicly insulting and trolling you directly because you deleted their message. How do you respond?"),
 ]
 
-APPLY_CUSTOM_ID = "modapp_apply_button"
+APPLY_CUSTOM_ID = "1536596759768342589"
 QUESTION_TIMEOUT = 600  # seconds per question before the application auto-cancels
 
 
