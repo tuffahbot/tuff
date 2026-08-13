@@ -90,9 +90,16 @@ def _create_tables(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS guild_settings (
             guild_id INTEGER PRIMARY KEY,
-            autorole_id INTEGER
+            autorole_id INTEGER,
+            mod_app_channel_id INTEGER
         )
     """)
+    # Migration for DBs created before mod_app_channel_id existed -- harmless
+    # no-op (caught below) if the column is already there.
+    try:
+        conn.execute("ALTER TABLE guild_settings ADD COLUMN mod_app_channel_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS polls (
             message_id INTEGER PRIMARY KEY,
@@ -111,6 +118,18 @@ def _create_tables(conn):
             user_id INTEGER NOT NULL,
             option_index INTEGER NOT NULL,
             PRIMARY KEY (message_id, user_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mod_applications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            answers TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewer_id INTEGER,
+            submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at TEXT
         )
     """)
 
@@ -328,3 +347,58 @@ def get_poll_vote_counts(message_id: int) -> dict:
             (message_id,),
         ).fetchall()
         return {r["option_index"]: r["c"] for r in rows}
+
+
+# ---------- Guild settings / Mod application review channel ----------
+
+def get_mod_app_channel(guild_id: int) -> int | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT mod_app_channel_id FROM guild_settings WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+        return row["mod_app_channel_id"] if row and row["mod_app_channel_id"] else None
+
+
+def set_mod_app_channel(guild_id: int, channel_id: int):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO guild_settings (guild_id, mod_app_channel_id) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET mod_app_channel_id = excluded.mod_app_channel_id
+        """, (guild_id, channel_id))
+
+
+# ---------- Mod applications ----------
+
+def create_application(guild_id: int, user_id: int, answers: list) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO mod_applications (guild_id, user_id, answers, status) VALUES (?, ?, ?, 'pending')",
+            (guild_id, user_id, json.dumps(answers)),
+        )
+        return cur.lastrowid
+
+
+def get_application(app_id: int):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM mod_applications WHERE id = ?", (app_id,)).fetchone()
+
+
+def get_pending_application(guild_id: int, user_id: int):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM mod_applications WHERE guild_id = ? AND user_id = ? AND status = 'pending'",
+            (guild_id, user_id),
+        ).fetchone()
+
+
+def get_pending_applications():
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM mod_applications WHERE status = 'pending'").fetchall()
+
+
+def set_application_status(app_id: int, status: str, reviewer_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE mod_applications SET status = ?, reviewer_id = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (status, reviewer_id, app_id),
+        )
