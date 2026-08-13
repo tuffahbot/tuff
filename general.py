@@ -51,6 +51,11 @@ HELP_SECTIONS = {
         "/purge <amount, max 1000>, /slowmode <seconds>",
         "Mod actions are logged to the logs channel instead of posting in chat",
     ],
+    "📋 Mod Applications": [
+        "/modapp channel <#channel> — [admin] set where finished applications get posted",
+        "/modapp panel — [admin] post the 'Apply Now' button in this channel",
+        "Applicants click the button and answer questions in DMs, then staff can Accept/Deny with buttons",
+    ],
 }
 
 
