@@ -40,6 +40,7 @@ STARTUP_EXTENSIONS = (
     "polls",
     "roles",
     "fun",
+    "modapps",
 )
 
 
