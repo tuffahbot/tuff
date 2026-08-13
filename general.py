@@ -143,16 +143,28 @@ class General(commands.Cog):
         if scope == "global":
             synced = await self.bot.tree.sync()
             return f"🌐 Synced {len(synced)} command(s) globally. Discord can take up to an hour to push global updates out to every server -- use `guild` scope for an instant check in this server."
+        elif scope == "clear":
+            self.bot.tree.clear_commands(guild=guild)
+            await self.bot.tree.sync(guild=guild)
+            return (
+                f"🧹 Cleared this server's guild-specific command overrides for **{guild.name}**. "
+                "You should now only see one copy of each command (the global ones)."
+            )
         else:
             self.bot.tree.copy_global_to(guild=guild)
             synced = await self.bot.tree.sync(guild=guild)
-            return f"⚡ Synced {len(synced)} command(s) instantly to **{guild.name}**."
+            return (
+                f"⚡ Synced {len(synced)} command(s) instantly to **{guild.name}**.\n"
+                "-# Heads up: while a guild-specific copy is active, commands will show up **twice** here "
+                "(the guild copy + the global one). Run `scope: clear` once you're done testing to remove the duplicate."
+            )
 
     @app_commands.command(name="sync", description="[Owner] Force re-sync slash commands")
-    @app_commands.describe(scope="'guild' updates this server instantly, 'global' updates everywhere (slower)")
+    @app_commands.describe(scope="'guild' updates this server instantly, 'global' updates everywhere (slower), 'clear' removes duplicate guild commands")
     @app_commands.choices(scope=[
-        app_commands.Choice(name="This server (instant)", value="guild"),
-        app_commands.Choice(name="Global (up to ~1hr to appear)", value="global"),
+        app_commands.Choice(name="This server (instant, but duplicates until cleared)", value="guild"),
+        app_commands.Choice(name="Global (up to ~1hr to appear, no duplicates)", value="global"),
+        app_commands.Choice(name="Clear duplicate guild commands", value="clear"),
     ])
     async def sync(self, interaction: discord.Interaction, scope: app_commands.Choice[str] = None):
         if interaction.user.id != AUTHORIZED_SAY_USER_ID:
@@ -166,7 +178,7 @@ class General(commands.Cog):
     async def sync_text(self, ctx: commands.Context, scope: str = "guild"):
         if ctx.author.id != AUTHORIZED_SAY_USER_ID:
             return  # stay quiet, same as ?say
-        result = await self._do_sync(ctx.guild, scope if scope == "global" else "guild")
+        result = await self._do_sync(ctx.guild, scope if scope in ("global", "clear") else "guild")
         await ctx.reply(result, mention_author=False)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
