@@ -50,14 +50,23 @@ class AFK(commands.Cog):
         if message.author.bot or not message.guild:
             return
 
-        # Sending a message clears your own AFK.
-        row = db.get_afk(message.guild.id, message.author.id)
-        if row is not None:
-            await self._clear_afk(message.author, row)
-            try:
-                await message.channel.send(f"👋 Welcome back, {message.author.mention} -- AFK removed.", delete_after=8)
-            except discord.Forbidden:
-                pass
+        # If this message IS a "?afk" invocation, the command below will handle
+        # state itself -- checking here too would race against it (the command
+        # can finish writing the new AFK row before this listener's read runs,
+        # making it look like the person "sent a message while AFK" when really
+        # this message was the one that just set it).
+        ctx = await self.bot.get_context(message)
+        is_afk_command = ctx.command is not None and ctx.command.qualified_name == "afk"
+
+        # Sending any other message clears your own AFK.
+        if not is_afk_command:
+            row = db.get_afk(message.guild.id, message.author.id)
+            if row is not None:
+                await self._clear_afk(message.author, row)
+                try:
+                    await message.channel.send(f"👋 Welcome back, {message.author.mention} -- AFK removed.", delete_after=8)
+                except discord.Forbidden:
+                    pass
 
         # Let the sender know if they pinged someone who's AFK.
         if message.mentions:
