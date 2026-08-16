@@ -22,7 +22,8 @@ HELP_SECTIONS = {
     "🎉 Giveaways": [
         "/giveaway start <prize> <duration> <winners> — [admin] e.g. duration `10m`, `2h`, `1d`",
         "/giveaway end <message_id> — [admin] end early & pick winners",
-        "/giveaway reroll <message_id> — [admin] reroll winners",
+        "/giveaway reroll <message_id> — [admin] pick new winners",
+        "Enter with the button on the giveaway post — click again to leave",
     ],
     "📊 Polls": [
         "/poll create <question> <options> [duration] — options comma-separated (2-10), duration e.g. `30m`, `2h`, `1d`",
