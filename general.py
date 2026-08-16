@@ -47,6 +47,10 @@ HELP_SECTIONS = {
     "🎈 Fun": [
         "/ship <member> [member2] — see how compatible two people are (defaults to you)",
     ],
+    "😀 Emoji": [
+        "/steal <emoji> — [needs Manage Emojis] copy pasted emoji into this server (or reply to a message with none)",
+        "/stealserver <server_id> — [needs Manage Emojis] copy every emoji from another server the bot is in",
+    ],
     "🛡️ Moderation (mod role or matching Discord permission required)": [
         "/warn, /warnings, /clearwarnings, /removewarning",
         "/kick, /ban, /unban",
