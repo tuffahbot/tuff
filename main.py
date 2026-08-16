@@ -42,6 +42,7 @@ STARTUP_EXTENSIONS = (
     "roles",
     "fun",
     "modapps",
+    "afk",
 )
 
 
