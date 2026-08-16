@@ -36,6 +36,7 @@ HELP_SECTIONS = {
     ],
     "🕵️ Utility": [
         "/snipe — show the last deleted message in this channel",
+        "/uptime — see how long the bot has been online",
         "/autorole set <role> — [admin] auto-assign a role to new members",
         "/autorole remove — [admin] turn autorole off",
         "/autorole view — see the current autorole",
@@ -186,6 +187,29 @@ class General(commands.Cog):
             return  # stay quiet, same as ?say
         result = await self._do_sync(ctx.guild, scope if scope in ("global", "clear") else "guild")
         await ctx.reply(result, mention_author=False)
+
+    def _uptime_text(self) -> str:
+        delta = discord.utils.utcnow() - self.bot.start_time
+        days, rem = divmod(int(delta.total_seconds()), 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, seconds = divmod(rem, 60)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours or days:
+            parts.append(f"{hours}h")
+        if minutes or hours or days:
+            parts.append(f"{minutes}m")
+        parts.append(f"{seconds}s")
+        return " ".join(parts)
+
+    @app_commands.command(name="uptime", description="See how long the bot has been online")
+    async def uptime(self, interaction: discord.Interaction):
+        await interaction.response.send_message(f"🟢 Online for **{self._uptime_text()}** (since {discord.utils.format_dt(self.bot.start_time, 'f')})")
+
+    @commands.command(name="uptime")
+    async def uptime_text(self, ctx: commands.Context):
+        await ctx.reply(f"🟢 Online for **{self._uptime_text()}** (since {discord.utils.format_dt(self.bot.start_time, 'f')})", mention_author=False)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if not interaction.response.is_done():
