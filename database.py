@@ -132,6 +132,15 @@ def _create_tables(conn):
             reviewed_at TEXT
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS afk_status (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            reason TEXT,
+            since TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (guild_id, user_id)
+        )
+    """)
 
 
 
@@ -411,3 +420,25 @@ def set_application_status(app_id: int, status: str, reviewer_id: int):
             "UPDATE mod_applications SET status = ?, reviewer_id = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?",
             (status, reviewer_id, app_id),
         )
+
+
+# ---------- AFK ----------
+
+def set_afk(guild_id: int, user_id: int, reason: str | None):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO afk_status (guild_id, user_id, reason, since) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET reason = excluded.reason, since = CURRENT_TIMESTAMP
+        """, (guild_id, user_id, reason))
+
+
+def get_afk(guild_id: int, user_id: int):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM afk_status WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+        ).fetchone()
+
+
+def remove_afk(guild_id: int, user_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM afk_status WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
