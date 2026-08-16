@@ -295,6 +295,15 @@ def get_giveaway_entries(message_id: int) -> list[int]:
         return [r["user_id"] for r in rows]
 
 
+def remove_giveaway_entry(message_id: int, user_id: int) -> bool:
+    """Returns True if an entry was actually removed."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM giveaway_entries WHERE message_id = ? AND user_id = ?", (message_id, user_id)
+        )
+        return cur.rowcount > 0
+
+
 # ---------- Polls ----------
 
 def create_poll(message_id: int, guild_id: int, channel_id: int, question: str, options: list[str], creator_id: int, ends_at_iso: str | None):
