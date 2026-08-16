@@ -1,0 +1,72 @@
+from datetime import datetime, timezone
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+import database as db
+
+MAX_REASON_LENGTH = 200
+
+
+class AFK(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+
+    def _since(self, row) -> datetime:
+        return datetime.fromisoformat(row["since"]).replace(tzinfo=timezone.utc)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or not message.guild:
+            return
+
+        # Sending a message clears your own AFK.
+        row = db.get_afk(message.guild.id, message.author.id)
+        if row is not None:
+            db.remove_afk(message.guild.id, message.author.id)
+            try:
+                await message.channel.send(f"👋 Welcome back, {message.author.mention} -- AFK removed.", delete_after=8)
+            except discord.Forbidden:
+                pass
+
+        # Let the sender know if they pinged someone who's AFK.
+        if message.mentions:
+            notices = []
+            for user in message.mentions:
+                if user.id == message.author.id:
+                    continue
+                afk_row = db.get_afk(message.guild.id, user.id)
+                if afk_row is None:
+                    continue
+                ago = discord.utils.format_dt(self._since(afk_row), "R")
+                reason = afk_row["reason"] or "AFK"
+                notices.append(f"💤 {user.mention} is AFK ({ago}): {reason}")
+            if notices:
+                try:
+                    await message.channel.send("\n".join(notices))
+                except discord.Forbidden:
+                    pass
+
+    @app_commands.command(name="afk", description="Mark yourself as AFK")
+    @app_commands.describe(reason="What you're away for (optional)")
+    async def afk(self, interaction: discord.Interaction, reason: str = None):
+        reason = reason[:MAX_REASON_LENGTH] if reason else None
+        db.set_afk(interaction.guild_id, interaction.user.id, reason)
+        text = "💤 You're now AFK" + (f": {reason}" if reason else ".")
+        await interaction.response.send_message(text)
+
+    @commands.command(name="afk")
+    async def afk_text(self, ctx: commands.Context, *, reason: str = None):
+        reason = reason[:MAX_REASON_LENGTH] if reason else None
+        db.set_afk(ctx.guild.id, ctx.author.id, reason)
+        text = "💤 You're now AFK" + (f": {reason}" if reason else ".")
+        await ctx.reply(text, mention_author=False)
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if not interaction.response.is_done():
+            await interaction.response.send_message(f"Error: {error}", ephemeral=True)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(AFK(bot))
