@@ -138,9 +138,15 @@ def _create_tables(conn):
             user_id INTEGER NOT NULL,
             reason TEXT,
             since TEXT DEFAULT CURRENT_TIMESTAMP,
+            original_nick TEXT,
             PRIMARY KEY (guild_id, user_id)
         )
     """)
+    # Migration for DBs created before original_nick existed.
+    try:
+        conn.execute("ALTER TABLE afk_status ADD COLUMN original_nick TEXT")
+    except sqlite3.OperationalError:
+        pass
 
 
 
@@ -424,12 +430,12 @@ def set_application_status(app_id: int, status: str, reviewer_id: int):
 
 # ---------- AFK ----------
 
-def set_afk(guild_id: int, user_id: int, reason: str | None):
+def set_afk(guild_id: int, user_id: int, reason: str | None, original_nick: str | None):
     with get_conn() as conn:
         conn.execute("""
-            INSERT INTO afk_status (guild_id, user_id, reason, since) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(guild_id, user_id) DO UPDATE SET reason = excluded.reason, since = CURRENT_TIMESTAMP
-        """, (guild_id, user_id, reason))
+            INSERT INTO afk_status (guild_id, user_id, reason, since, original_nick) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET reason = excluded.reason, since = CURRENT_TIMESTAMP, original_nick = excluded.original_nick
+        """, (guild_id, user_id, reason, original_nick))
 
 
 def get_afk(guild_id: int, user_id: int):
