@@ -37,6 +37,7 @@ HELP_SECTIONS = {
     "🕵️ Utility": [
         "/snipe — show the last deleted message in this channel",
         "/uptime — see how long the bot has been online",
+        "/afk [reason] — mark yourself AFK, clears automatically when you next talk",
         "/autorole set <role> — [admin] auto-assign a role to new members",
         "/autorole remove — [admin] turn autorole off",
         "/autorole view — see the current autorole",
