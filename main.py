@@ -26,6 +26,7 @@ intents.members = True           # required for role assignment on level-up, war
 intents.voice_states = True      # required for music playback and join-to-create voice channels
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
+bot.start_time = discord.utils.utcnow()  # process start, for /uptime -- set once here, not in on_ready (which can refire on reconnects)
 
 STARTUP_EXTENSIONS = (
     "general",
@@ -52,7 +53,10 @@ async def on_ready():
         log.info(f"Synced {len(synced)} slash command(s)")
     except Exception as e:
         log.exception(f"Failed to sync slash commands: {e}")
-    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.listening, name="/play | /rank"))
+    await bot.change_presence(
+        status=discord.Status.dnd,
+        activity=discord.Activity(type=discord.ActivityType.listening, name="/play | /rank"),
+    )
 
 
 @bot.event
