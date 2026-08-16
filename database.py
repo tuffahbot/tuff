@@ -129,7 +129,22 @@ def _create_tables(conn):
             status TEXT NOT NULL DEFAULT 'pending',
             reviewer_id INTEGER,
             submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            reviewed_at TEXT
+            reviewed_at TEXT,
+            message_id INTEGER
+        )
+    """)
+    # Migration for DBs created before message_id existed.
+    try:
+        conn.execute("ALTER TABLE mod_applications ADD COLUMN message_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dm_relays (
+            thread_id INTEGER PRIMARY KEY,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            app_id INTEGER,
+            active INTEGER NOT NULL DEFAULT 1
         )
     """)
     conn.execute("""
@@ -420,6 +435,11 @@ def get_pending_applications():
         return conn.execute("SELECT * FROM mod_applications WHERE status = 'pending'").fetchall()
 
 
+def set_application_message_id(app_id: int, message_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE mod_applications SET message_id = ? WHERE id = ?", (message_id, app_id))
+
+
 def set_application_status(app_id: int, status: str, reviewer_id: int):
     with get_conn() as conn:
         conn.execute(
@@ -448,3 +468,41 @@ def get_afk(guild_id: int, user_id: int):
 def remove_afk(guild_id: int, user_id: int):
     with get_conn() as conn:
         conn.execute("DELETE FROM afk_status WHERE guild_id = ? AND user_id = ?", (guild_id, user_id))
+
+
+def get_all_applications():
+    """Every application regardless of status -- used to re-register review
+    buttons (Accept/Deny/Message) on restart, since Message stays usable
+    even after a decision has been made."""
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM mod_applications").fetchall()
+
+
+# ---------- DM relay (staff <-> mod-app applicant) ----------
+
+def create_relay(thread_id: int, guild_id: int, user_id: int, app_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO dm_relays (thread_id, guild_id, user_id, app_id, active) VALUES (?, ?, ?, ?, 1)",
+            (thread_id, guild_id, user_id, app_id),
+        )
+
+
+def get_relay_by_thread(thread_id: int):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM dm_relays WHERE thread_id = ? AND active = 1", (thread_id,)
+        ).fetchone()
+
+
+def get_relay_by_user(user_id: int):
+    """Most recent active relay thread for this user, if any."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM dm_relays WHERE user_id = ? AND active = 1 ORDER BY thread_id DESC LIMIT 1", (user_id,)
+        ).fetchone()
+
+
+def close_relay(thread_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE dm_relays SET active = 0 WHERE thread_id = ?", (thread_id,))
