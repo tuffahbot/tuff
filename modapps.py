@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 
 import discord
 from discord import app_commands
@@ -50,8 +51,10 @@ class ApplyView(discord.ui.View):
 
 
 class ReviewView(discord.ui.View):
-    """Accept/Deny buttons on a submitted application. custom_id encodes the
-    application's DB id so it can be rebuilt and re-registered on restart."""
+    """Accept/Deny/Message buttons on a submitted application. custom_id
+    encodes the application's DB id so it can be rebuilt and re-registered
+    on restart. Accept/Deny disable once a decision is made; Message stays
+    usable indefinitely so staff can follow up with an applicant later."""
 
     def __init__(self, cog: "ModApps", app_id: int, disabled: bool = False):
         super().__init__(timeout=None)
@@ -62,15 +65,22 @@ class ReviewView(discord.ui.View):
                                     custom_id=f"modapp_accept:{app_id}", disabled=disabled)
         deny = discord.ui.Button(label="Deny", emoji="❌", style=discord.ButtonStyle.danger,
                                   custom_id=f"modapp_deny:{app_id}", disabled=disabled)
+        message_btn = discord.ui.Button(label="Message", emoji="💬", style=discord.ButtonStyle.secondary,
+                                         custom_id=f"modapp_message:{app_id}")
         accept.callback = self._make_callback("accepted")
         deny.callback = self._make_callback("denied")
+        message_btn.callback = self._message_callback
         self.add_item(accept)
         self.add_item(deny)
+        self.add_item(message_btn)
 
     def _make_callback(self, decision: str):
         async def callback(interaction: discord.Interaction):
             await self.cog.review_application(interaction, self.app_id, decision)
         return callback
+
+    async def _message_callback(self, interaction: discord.Interaction):
+        await self.cog.start_relay(interaction, self.app_id)
 
 
 class ModApps(commands.Cog):
@@ -80,8 +90,8 @@ class ModApps(commands.Cog):
 
     async def cog_load(self):
         self.bot.add_view(ApplyView(self))
-        for app_row in db.get_pending_applications():
-            self.bot.add_view(ReviewView(self, app_row["id"]))
+        for app_row in db.get_all_applications():
+            self.bot.add_view(ReviewView(self, app_row["id"], disabled=(app_row["status"] != "pending")))
 
     # ---------------- Panel embed / setup ----------------
 
@@ -237,7 +247,8 @@ class ModApps(commands.Cog):
             channel = self.bot.get_channel(review_channel_id) or await self.bot.fetch_channel(review_channel_id)
             embed = self._application_embed(user, answers, status="pending")
             try:
-                await channel.send(embed=embed, view=ReviewView(self, app_id))
+                posted = await channel.send(embed=embed, view=ReviewView(self, app_id))
+                db.set_application_message_id(app_id, posted.id)
             except discord.HTTPException:
                 await user.send("⚠️ Your application was saved, but I couldn't post it in the review channel -- let a mod know.")
         finally:
@@ -325,6 +336,174 @@ class ModApps(commands.Cog):
         except discord.Forbidden:
             return "⚠️ Accepted, but Discord refused the role assignment -- check permissions/hierarchy."
         return None
+
+    @modapp.command(name="refreshbuttons", description="[Admin] Add the Message button to already-posted pending applications")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def modapp_refreshbuttons(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        result = await self._refresh_buttons(interaction.guild)
+        await interaction.followup.send(result, ephemeral=True)
+
+    @modapp_text.command(name="refreshbuttons")
+    @commands.has_permissions(manage_guild=True)
+    async def modapp_text_refreshbuttons(self, ctx: commands.Context):
+        result = await self._refresh_buttons(ctx.guild)
+        await ctx.reply(result, mention_author=False)
+
+    async def _refresh_buttons(self, guild: discord.Guild) -> str:
+        """Backfill the Message button (and message_id) onto pending applications
+        that were posted before that feature existed. One-time fix -- new
+        applications already store their message_id when they're created."""
+        review_channel_id = db.get_mod_app_channel(guild.id)
+        if review_channel_id is None:
+            return "No review channel set for this server."
+
+        channel = self.bot.get_channel(review_channel_id) or await self.bot.fetch_channel(review_channel_id)
+        pending_by_user = {row["user_id"]: row for row in db.get_pending_applications() if row["guild_id"] == guild.id}
+        if not pending_by_user:
+            return "No pending applications to refresh."
+
+        footer_re = re.compile(r"Applicant ID: (\d+)")
+        refreshed = 0
+        try:
+            async for message in channel.history(limit=200):
+                if message.author.id != self.bot.user.id or not message.embeds:
+                    continue
+                footer_text = message.embeds[0].footer.text or ""
+                match = footer_re.search(footer_text)
+                if not match:
+                    continue
+                user_id = int(match.group(1))
+                row = pending_by_user.get(user_id)
+                if row is None:
+                    continue
+                if row["message_id"] == message.id:
+                    continue  # already up to date
+                try:
+                    await message.edit(view=ReviewView(self, row["id"]))
+                    db.set_application_message_id(row["id"], message.id)
+                    refreshed += 1
+                except discord.HTTPException:
+                    continue
+        except discord.Forbidden:
+            return f"I can't read message history in {channel.mention}."
+
+        if refreshed == 0:
+            return "Nothing to refresh -- pending applications already have the Message button, or I couldn't find their posts in the last 200 messages."
+        return f"✅ Refreshed {refreshed} application post(s) -- the Message button should show up now."
+
+    # ---------------- DM relay ("type as bot" to an applicant) ----------------
+    # Clicking "Message" on an application spins up a thread on that post.
+    # Anything staff types in the thread gets sent to the applicant as the
+    # bot itself (not under the staff member's name) -- and the applicant's
+    # DM replies get relayed back into the thread automatically.
+
+    async def start_relay(self, interaction: discord.Interaction, app_id: int):
+        if not interaction.user.guild_permissions.manage_guild:
+            await interaction.response.send_message("You need the Manage Server permission to do that.", ephemeral=True)
+            return
+
+        app_row = db.get_application(app_id)
+        if app_row is None:
+            await interaction.response.send_message("Couldn't find that application anymore.", ephemeral=True)
+            return
+
+        existing = db.get_relay_by_user(app_row["user_id"])
+        if existing is not None:
+            thread = interaction.guild.get_channel_or_thread(existing["thread_id"])
+            if thread is not None:
+                await interaction.response.send_message(f"Already relaying to this applicant in {thread.mention}.", ephemeral=True)
+                return
+
+        applicant = self.bot.get_user(app_row["user_id"]) or await self.bot.fetch_user(app_row["user_id"])
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            thread = await interaction.channel.create_thread(
+                name=f"app-{applicant.name}"[:100],
+                message=interaction.message,
+                auto_archive_duration=1440,
+            )
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"Couldn't create a thread: {e}", ephemeral=True)
+            return
+
+        db.create_relay(thread.id, interaction.guild_id, app_row["user_id"], app_id)
+        await thread.send(
+            f"💬 **DM relay started with {applicant}.**\n"
+            "Anything sent in this thread gets DMed to them as the bot -- they won't see your name. "
+            f"Their replies show up here too. Run `/modapp closerelay` (or `{self.bot.command_prefix}modapp closerelay`) here when you're done."
+        )
+        await interaction.followup.send(f"Started a relay: {thread.mention}", ephemeral=True)
+
+    @modapp.command(name="closerelay", description="[Admin] Stop relaying messages in this thread")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def modapp_closerelay(self, interaction: discord.Interaction):
+        result = await self._close_relay(interaction.channel)
+        await interaction.response.send_message(result, ephemeral=True)
+
+    @modapp_text.command(name="closerelay")
+    @commands.has_permissions(manage_guild=True)
+    async def modapp_text_closerelay(self, ctx: commands.Context):
+        result = await self._close_relay(ctx.channel)
+        await ctx.reply(result, mention_author=False)
+
+    async def _close_relay(self, channel) -> str:
+        if not isinstance(channel, discord.Thread):
+            return "Run this inside the relay thread."
+        relay = db.get_relay_by_thread(channel.id)
+        if relay is None:
+            return "No active relay in this thread."
+        db.close_relay(channel.id)
+        try:
+            await channel.edit(archived=True, locked=True)
+        except discord.HTTPException:
+            pass
+        return "🔒 Relay closed -- messages here will no longer reach the applicant."
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot:
+            return
+
+        # Staff typing in a relay thread -> DMed to the applicant as the bot.
+        if isinstance(message.channel, discord.Thread):
+            relay = db.get_relay_by_thread(message.channel.id)
+            if relay is None:
+                return
+            if not message.author.guild_permissions.manage_guild:
+                return  # only staff messages get relayed out
+            if not message.content:
+                return  # skip attachment-only/empty messages, nothing to relay
+
+            applicant = self.bot.get_user(relay["user_id"]) or await self.bot.fetch_user(relay["user_id"])
+            try:
+                await applicant.send(message.content)
+                try:
+                    await message.add_reaction("✅")
+                except discord.HTTPException:
+                    pass
+            except discord.Forbidden:
+                await message.channel.send("⚠️ Couldn't DM them -- they may have DMs closed or blocked the bot.")
+            return
+
+        # Applicant replying in DMs -> relayed back into the thread.
+        if message.guild is None:
+            relay = db.get_relay_by_user(message.author.id)
+            if relay is None:
+                return
+            thread = self.bot.get_channel(relay["thread_id"])
+            if thread is None:
+                try:
+                    thread = await self.bot.fetch_channel(relay["thread_id"])
+                except (discord.NotFound, discord.Forbidden):
+                    return
+            embed = discord.Embed(description=message.content or "*(no text)*", color=discord.Color.blurple())
+            embed.set_author(name=str(message.author), icon_url=message.author.display_avatar.url)
+            try:
+                await thread.send(embed=embed)
+            except discord.HTTPException:
+                pass
 
 
 async def setup(bot: commands.Bot):
