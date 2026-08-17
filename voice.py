@@ -3,9 +3,12 @@ from discord import app_commands
 from discord.ext import commands
 
 import database as db
-from general import AUTHORIZED_SAY_USER_ID
 
-# Used only as a fallback when no /modrole has been configured yet -- same
+# Hardcoded server-specific role IDs that can always join a locked temp VC,
+# regardless of any /modrole configuration.
+OWNER_ROLE_ID = 1536175409199194202
+ADMIN_ROLE_ID = 1536186361378381924
+# Used as the mod-role fallback when no /modrole has been configured -- same
 # role modapps.py auto-assigns when a mod application is accepted.
 FALLBACK_MOD_ROLE_ID = 1536186651632738335
 
@@ -25,27 +28,16 @@ def find_owner_id(channel: discord.VoiceChannel) -> int | None:
     return None
 
 
-def lock_bypass_targets(guild: discord.Guild) -> list[discord.Member | discord.Role]:
-    """Everyone/every role that should still be able to join a locked temp VC:
-    the real Discord server owner, the bot's designated owner user, any role
-    with Administrator, and the configured (or fallback) mod role."""
+def lock_bypass_targets(guild: discord.Guild) -> list[discord.Role]:
+    """Roles that should still be able to join a locked temp VC: the owner
+    role, the admin role, and the configured (or fallback) mod role."""
+    role_ids = [OWNER_ROLE_ID, ADMIN_ROLE_ID, db.get_mod_role(guild.id) or FALLBACK_MOD_ROLE_ID]
+
     targets = []
-
-    if guild.owner is not None:
-        targets.append(guild.owner)
-
-    owner_user = guild.get_member(AUTHORIZED_SAY_USER_ID)
-    if owner_user is not None and owner_user not in targets:
-        targets.append(owner_user)
-
-    for role in guild.roles:
-        if role.permissions.administrator:
+    for role_id in role_ids:
+        role = guild.get_role(role_id)
+        if role is not None and role not in targets:
             targets.append(role)
-
-    mod_role_id = db.get_mod_role(guild.id) or FALLBACK_MOD_ROLE_ID
-    mod_role = guild.get_role(mod_role_id)
-    if mod_role is not None and mod_role not in targets:
-        targets.append(mod_role)
 
     return targets
 
@@ -189,7 +181,7 @@ class VoiceControlView(discord.ui.View):
             except discord.Forbidden:
                 pass
 
-        await interaction.response.send_message("🔒 Locked. (Server owner, admins, and the mod role can still join.)", ephemeral=True)
+        await interaction.response.send_message("🔒 Locked. (Owner, admin, and mod roles can still join.)", ephemeral=True)
 
     @discord.ui.button(label="Unlock", emoji="🔓", style=discord.ButtonStyle.success, custom_id="voice_unlock", row=0)
     async def unlock(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -314,6 +306,91 @@ class JoinToCreate(commands.Cog):
                 finally:
                     self.temp_channels.pop(before.channel.id, None)
 
+    # ---------------- Admin: unlock / cleanup broken temp channels ----------------
+    # Covers the case where a temp channel gets locked and then stranded --
+    # e.g. the owner leaves the server, or the bot restarts and loses the
+    # in-memory temp_channels map -- so nobody (including the owner) can get
+    # back in to unlock or delete it themselves.
+
+    def _is_temp_channel(self, channel: discord.VoiceChannel) -> bool:
+        """Best-effort check for whether `channel` was created by join-to-create,
+        using the in-memory map first and falling back to the owner-style
+        permission overwrite (manage_channels granted to a specific member)
+        that every temp channel gets when it's created."""
+        if channel.id == TRIGGER_CHANNEL_ID:
+            return False
+        if channel.id in self.temp_channels:
+            return True
+        return find_owner_id(channel) is not None
+
+    async def _force_unlock(self, channel: discord.VoiceChannel, moderator):
+        everyone = channel.guild.default_role
+        await channel.set_permissions(everyone, connect=None, reason=f"Force-unlocked by {moderator}")
+        for target in lock_bypass_targets(channel.guild):
+            try:
+                await channel.set_permissions(target, overwrite=None, reason=f"Force-unlocked by {moderator}")
+            except discord.Forbidden:
+                pass
+
+    async def _cleanup_broken(self, guild: discord.Guild, moderator) -> list[str]:
+        """Deletes every empty temp channel still hanging around (locked-and-
+        abandoned, or just missed by the normal on-empty cleanup). Returns the
+        names of the channels that were deleted."""
+        deleted = []
+        for channel in list(guild.voice_channels):
+            if channel.members:
+                continue
+            if not self._is_temp_channel(channel):
+                continue
+            name = channel.name
+            try:
+                await channel.delete(reason=f"Cleaned up by {moderator} (empty/broken join-to-create channel)")
+            except (discord.NotFound, discord.Forbidden):
+                continue
+            deleted.append(name)
+            self.temp_channels.pop(channel.id, None)
+        return deleted
+
+    vcadmin = app_commands.Group(name="vcadmin", description="Admin tools for join-to-create voice channels", default_permissions=discord.Permissions(manage_channels=True))
+
+    @vcadmin.command(name="unlock", description="[Admin] Force-unlock a voice channel, even if the owner is gone")
+    @app_commands.describe(channel="The (usually locked) voice channel to unlock")
+    @app_commands.checks.has_permissions(manage_channels=True)
+    async def vcadmin_unlock(self, interaction: discord.Interaction, channel: discord.VoiceChannel):
+        await self._force_unlock(channel, interaction.user)
+        await interaction.response.send_message(f"🔓 Force-unlocked {channel.mention}. Anyone can join it now.", ephemeral=True)
+
+    @vcadmin.command(name="cleanup", description="[Admin] Delete empty/broken join-to-create channels stuck in this server")
+    @app_commands.checks.has_permissions(manage_channels=True)
+    async def vcadmin_cleanup(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        deleted = await self._cleanup_broken(interaction.guild, interaction.user)
+        if not deleted:
+            await interaction.followup.send("Nothing to clean up -- no empty/broken temp channels found.", ephemeral=True)
+            return
+        listed = ", ".join(deleted[:20]) + (f", +{len(deleted) - 20} more" if len(deleted) > 20 else "")
+        await interaction.followup.send(f"🧹 Deleted {len(deleted)} channel(s): {listed}", ephemeral=True)
+
+    @commands.group(name="vcadmin", invoke_without_command=True)
+    async def vcadmin_text(self, ctx: commands.Context):
+        await ctx.reply(f"Usage: `{ctx.prefix}vcadmin unlock <channel>`, `{ctx.prefix}vcadmin cleanup`", mention_author=False)
+
+    @vcadmin_text.command(name="unlock")
+    @commands.has_permissions(manage_channels=True)
+    async def vcadmin_text_unlock(self, ctx: commands.Context, *, channel: discord.VoiceChannel):
+        await self._force_unlock(channel, ctx.author)
+        await ctx.reply(f"🔓 Force-unlocked {channel.mention}. Anyone can join it now.", mention_author=False)
+
+    @vcadmin_text.command(name="cleanup")
+    @commands.has_permissions(manage_channels=True)
+    async def vcadmin_text_cleanup(self, ctx: commands.Context):
+        deleted = await self._cleanup_broken(ctx.guild, ctx.author)
+        if not deleted:
+            await ctx.reply("Nothing to clean up -- no empty/broken temp channels found.", mention_author=False)
+            return
+        listed = ", ".join(deleted[:20]) + (f", +{len(deleted) - 20} more" if len(deleted) > 20 else "")
+        await ctx.reply(f"🧹 Deleted {len(deleted)} channel(s): {listed}", mention_author=False)
+
     # ---------------- Staff bypass role config ----------------
     # Whoever holds this role can still join a temp VC even after the owner
     # locks it (see VoiceControlView.lock/unlock above).
@@ -335,7 +412,9 @@ class JoinToCreate(commands.Cog):
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message("You need the Manage Server permission to do that.", ephemeral=True)
+            is_vcadmin = interaction.command and interaction.command.qualified_name.startswith("vcadmin")
+            needed = "Manage Channels" if is_vcadmin else "Manage Server"
+            await interaction.response.send_message(f"You need the {needed} permission to do that.", ephemeral=True)
         else:
             if not interaction.response.is_done():
                 await interaction.response.send_message(f"Error: {error}", ephemeral=True)
@@ -357,12 +436,19 @@ class JoinToCreate(commands.Cog):
         await ctx.reply("Cleared -- no role bypasses locked voice channels now.", mention_author=False)
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        is_vcadmin = ctx.command and ctx.command.qualified_name.startswith("vcadmin")
         if isinstance(error, commands.MissingPermissions):
-            await ctx.reply("You need the Manage Server permission to do that.", mention_author=False)
+            needed = "Manage Channels" if is_vcadmin else "Manage Server"
+            await ctx.reply(f"You need the {needed} permission to do that.", mention_author=False)
         elif isinstance(error, commands.RoleNotFound):
             await ctx.reply("Couldn't find that role.", mention_author=False)
+        elif isinstance(error, commands.ChannelNotFound):
+            await ctx.reply("Couldn't find that voice channel -- try the exact name, mention it, or use its ID.", mention_author=False)
         elif isinstance(error, commands.MissingRequiredArgument):
-            await ctx.reply(f"Usage: `{ctx.prefix}modrole set <role>`", mention_author=False)
+            if is_vcadmin:
+                await ctx.reply(f"Usage: `{ctx.prefix}vcadmin unlock <channel>` or `{ctx.prefix}vcadmin cleanup`", mention_author=False)
+            else:
+                await ctx.reply(f"Usage: `{ctx.prefix}modrole set <role>`", mention_author=False)
         else:
             print(f"Voice prefix command error: {error}")
 
