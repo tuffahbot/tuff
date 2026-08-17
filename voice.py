@@ -3,6 +3,11 @@ from discord import app_commands
 from discord.ext import commands
 
 import database as db
+from general import AUTHORIZED_SAY_USER_ID
+
+# Used only as a fallback when no /modrole has been configured yet -- same
+# role modapps.py auto-assigns when a mod application is accepted.
+FALLBACK_MOD_ROLE_ID = 1536186651632738335
 
 # Joining this channel creates a fresh temp voice channel for that member and
 # moves them into it. The temp channel is auto-deleted once everyone leaves.
@@ -18,6 +23,31 @@ def find_owner_id(channel: discord.VoiceChannel) -> int | None:
         if isinstance(target, discord.Member) and overwrite.manage_channels:
             return target.id
     return None
+
+
+def lock_bypass_targets(guild: discord.Guild) -> list[discord.Member | discord.Role]:
+    """Everyone/every role that should still be able to join a locked temp VC:
+    the real Discord server owner, the bot's designated owner user, any role
+    with Administrator, and the configured (or fallback) mod role."""
+    targets = []
+
+    if guild.owner is not None:
+        targets.append(guild.owner)
+
+    owner_user = guild.get_member(AUTHORIZED_SAY_USER_ID)
+    if owner_user is not None and owner_user not in targets:
+        targets.append(owner_user)
+
+    for role in guild.roles:
+        if role.permissions.administrator:
+            targets.append(role)
+
+    mod_role_id = db.get_mod_role(guild.id) or FALLBACK_MOD_ROLE_ID
+    mod_role = guild.get_role(mod_role_id)
+    if mod_role is not None and mod_role not in targets:
+        targets.append(mod_role)
+
+    return targets
 
 
 class RenameModal(discord.ui.Modal, title="Rename Voice Channel"):
@@ -153,12 +183,13 @@ class VoiceControlView(discord.ui.View):
         everyone = channel.guild.default_role
         await channel.set_permissions(everyone, connect=False, reason=f"Locked by {interaction.user}")
 
-        mod_role_id = db.get_mod_role(channel.guild.id)
-        mod_role = channel.guild.get_role(mod_role_id) if mod_role_id else None
-        if mod_role:
-            await channel.set_permissions(mod_role, connect=True, reason=f"Staff bypass -- locked by {interaction.user}")
+        for target in lock_bypass_targets(channel.guild):
+            try:
+                await channel.set_permissions(target, connect=True, reason=f"Staff/owner bypass -- locked by {interaction.user}")
+            except discord.Forbidden:
+                pass
 
-        await interaction.response.send_message("🔒 Locked." + (f" ({mod_role.name} can still join.)" if mod_role else ""), ephemeral=True)
+        await interaction.response.send_message("🔒 Locked. (Server owner, admins, and the mod role can still join.)", ephemeral=True)
 
     @discord.ui.button(label="Unlock", emoji="🔓", style=discord.ButtonStyle.success, custom_id="voice_unlock", row=0)
     async def unlock(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -168,10 +199,11 @@ class VoiceControlView(discord.ui.View):
         everyone = channel.guild.default_role
         await channel.set_permissions(everyone, connect=None, reason=f"Unlocked by {interaction.user}")
 
-        mod_role_id = db.get_mod_role(channel.guild.id)
-        mod_role = channel.guild.get_role(mod_role_id) if mod_role_id else None
-        if mod_role:
-            await channel.set_permissions(mod_role, overwrite=None, reason=f"Unlocked by {interaction.user}")
+        for target in lock_bypass_targets(channel.guild):
+            try:
+                await channel.set_permissions(target, overwrite=None, reason=f"Unlocked by {interaction.user}")
+            except discord.Forbidden:
+                pass
 
         await interaction.response.send_message("🔓 Unlocked.", ephemeral=True)
 
