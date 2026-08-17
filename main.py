@@ -89,6 +89,15 @@ async def main():
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN is not set. Add it to your .env or Railway environment variables.")
 
+    log.info(f"discord.py version: {discord.__version__}")
+    major, minor = discord.version_info.major, discord.version_info.minor
+    if (major, minor) < (2, 4):
+        log.warning(
+            f"discord.py {discord.__version__} is running, but voice channel status (used by voice.py's "
+            "staff-present indicator) needs 2.4+. If requirements.txt already specifies a newer version, "
+            "this deploy is running a stale cached build -- clear the build cache and redeploy."
+        )
+
     if shutil.which("ffmpeg") is None:
         log.warning(
             "ffmpeg was not found on PATH -- /play will fail with 'ffmpeg was not found' until this is fixed. "
