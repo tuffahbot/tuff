@@ -1,5 +1,8 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
+
+import database as db
 
 # Joining this channel creates a fresh temp voice channel for that member and
 # moves them into it. The temp channel is auto-deleted once everyone leaves.
@@ -149,7 +152,13 @@ class VoiceControlView(discord.ui.View):
             return
         everyone = channel.guild.default_role
         await channel.set_permissions(everyone, connect=False, reason=f"Locked by {interaction.user}")
-        await interaction.response.send_message("🔒 Locked.", ephemeral=True)
+
+        mod_role_id = db.get_mod_role(channel.guild.id)
+        mod_role = channel.guild.get_role(mod_role_id) if mod_role_id else None
+        if mod_role:
+            await channel.set_permissions(mod_role, connect=True, reason=f"Staff bypass -- locked by {interaction.user}")
+
+        await interaction.response.send_message("🔒 Locked." + (f" ({mod_role.name} can still join.)" if mod_role else ""), ephemeral=True)
 
     @discord.ui.button(label="Unlock", emoji="🔓", style=discord.ButtonStyle.success, custom_id="voice_unlock", row=0)
     async def unlock(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -158,6 +167,12 @@ class VoiceControlView(discord.ui.View):
             return
         everyone = channel.guild.default_role
         await channel.set_permissions(everyone, connect=None, reason=f"Unlocked by {interaction.user}")
+
+        mod_role_id = db.get_mod_role(channel.guild.id)
+        mod_role = channel.guild.get_role(mod_role_id) if mod_role_id else None
+        if mod_role:
+            await channel.set_permissions(mod_role, overwrite=None, reason=f"Unlocked by {interaction.user}")
+
         await interaction.response.send_message("🔓 Unlocked.", ephemeral=True)
 
     @discord.ui.button(label="Kick", emoji="👢", style=discord.ButtonStyle.secondary, custom_id="voice_kick", row=1)
@@ -266,6 +281,58 @@ class JoinToCreate(commands.Cog):
                     pass
                 finally:
                     self.temp_channels.pop(before.channel.id, None)
+
+    # ---------------- Staff bypass role config ----------------
+    # Whoever holds this role can still join a temp VC even after the owner
+    # locks it (see VoiceControlView.lock/unlock above).
+
+    modrole = app_commands.Group(name="modrole", description="Set which role can join locked voice channels", default_permissions=discord.Permissions(manage_guild=True))
+
+    @modrole.command(name="set", description="[Admin] Set the role that can bypass locked voice channels")
+    @app_commands.describe(role="The staff/mod role")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def modrole_set(self, interaction: discord.Interaction, role: discord.Role):
+        db.set_mod_role(interaction.guild_id, role.id)
+        await interaction.response.send_message(f"✅ {role.mention} can now join locked voice channels.", ephemeral=True)
+
+    @modrole.command(name="clear", description="[Admin] Remove the locked-VC bypass role")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def modrole_clear(self, interaction: discord.Interaction):
+        db.clear_mod_role(interaction.guild_id)
+        await interaction.response.send_message("Cleared -- no role bypasses locked voice channels now.", ephemeral=True)
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message("You need the Manage Server permission to do that.", ephemeral=True)
+        else:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"Error: {error}", ephemeral=True)
+
+    @commands.group(name="modrole", invoke_without_command=True)
+    async def modrole_text(self, ctx: commands.Context):
+        await ctx.reply(f"Usage: `{ctx.prefix}modrole set <role>`, `{ctx.prefix}modrole clear`", mention_author=False)
+
+    @modrole_text.command(name="set")
+    @commands.has_permissions(manage_guild=True)
+    async def modrole_text_set(self, ctx: commands.Context, *, role: discord.Role):
+        db.set_mod_role(ctx.guild.id, role.id)
+        await ctx.reply(f"✅ {role.mention} can now join locked voice channels.", mention_author=False)
+
+    @modrole_text.command(name="clear")
+    @commands.has_permissions(manage_guild=True)
+    async def modrole_text_clear(self, ctx: commands.Context):
+        db.clear_mod_role(ctx.guild.id)
+        await ctx.reply("Cleared -- no role bypasses locked voice channels now.", mention_author=False)
+
+    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.reply("You need the Manage Server permission to do that.", mention_author=False)
+        elif isinstance(error, commands.RoleNotFound):
+            await ctx.reply("Couldn't find that role.", mention_author=False)
+        elif isinstance(error, commands.MissingRequiredArgument):
+            await ctx.reply(f"Usage: `{ctx.prefix}modrole set <role>`", mention_author=False)
+        else:
+            print(f"Voice prefix command error: {error}")
 
 
 async def setup(bot: commands.Bot):
