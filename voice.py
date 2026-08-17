@@ -290,10 +290,27 @@ class JoinToCreate(commands.Cog):
         a staff member is connected, or clears it once none are left."""
         staff_present = any(is_staff_member(m) for m in channel.members)
         desired = STAFF_STATUS_TEXT if staff_present else ""
-        if channel.status == desired:
-            return  # avoid a pointless edit call when nothing actually changed
+        # getattr, not channel.status directly -- on a discord.py install that
+        # predates voice channel status support, VoiceChannel has no `status`
+        # attribute at all (AttributeError), which is exactly what shows up
+        # if a deploy is still running an old cached build despite a newer
+        # pin in requirements.txt.
+        current = getattr(channel, "status", None)
+        if current == desired:
+            return
         try:
             await channel.edit(status=desired)
+        except AttributeError:
+            log.warning(
+                "VoiceChannel has no 'status' attribute -- this discord.py install predates voice channel "
+                "status support (needs 2.4+). requirements.txt may say otherwise, but the deployed build "
+                "doesn't match it -- force a clean redeploy with the build cache cleared."
+            )
+        except TypeError:
+            log.warning(
+                "channel.edit() doesn't accept status= on this discord.py version -- same cause as above, "
+                "an old build is running despite requirements.txt. Force a clean redeploy."
+            )
         except discord.Forbidden:
             # Setting a voice channel status needs the "Manage Channel"
             # permission on THIS specific channel -- if the bot's role only
@@ -331,8 +348,10 @@ class JoinToCreate(commands.Cog):
                 pass
 
         # Left a temp channel -> delete it if empty, otherwise refresh the
-        # status in case the person who left was the moderator.
-        if before.channel and before.channel.id in self.temp_channels:
+        # status in case the person who left was the moderator. Falls back to
+        # the owner-overwrite check (not just self.temp_channels) so this
+        # still works for channels created before the bot's last restart.
+        if before.channel and self._is_temp_channel(before.channel):
             if len(before.channel.members) == 0:
                 try:
                     await before.channel.delete(reason="Join-to-create channel empty")
@@ -344,9 +363,9 @@ class JoinToCreate(commands.Cog):
                 await self._update_staff_status(before.channel)
 
         # Joined a temp channel -> refresh the status in case a staff member
-        # (owner/admin/mod role) just joined.
+        # (owner/admin/mod role) just joined. Same fallback as above.
         joined_new_channel = after.channel and (before.channel is None or before.channel.id != after.channel.id)
-        if joined_new_channel and after.channel.id in self.temp_channels:
+        if joined_new_channel and self._is_temp_channel(after.channel):
             await self._update_staff_status(after.channel)
 
     # ---------------- Admin: unlock / cleanup broken temp channels ----------------
