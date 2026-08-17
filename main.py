@@ -43,6 +43,7 @@ STARTUP_EXTENSIONS = (
     "fun",
     "modapps",
     "afk",
+    "automod",
 )
 
 
