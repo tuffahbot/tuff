@@ -45,6 +45,12 @@ LEVEL_COLORS = {
 XP_MIN, XP_MAX = 8, 15        # xp awarded per eligible message (was 15-25)
 XP_COOLDOWN_SECONDS = 90      # per-user cooldown to prevent spam-leveling (was 60)
 
+# Per-user XP multipliers -- applied on top of the normal per-message roll.
+# 1503282641221320815 == the bot owner (see AUTHORIZED_SAY_USER_ID in general.py).
+XP_MULTIPLIERS: dict[int, float] = {
+    1503282641221320815: 10,
+}
+
 
 def xp_for_level(level: int) -> int:
     """Total cumulative XP required to reach `level`. Roughly 2x the old
@@ -116,7 +122,9 @@ class Leveling(commands.Cog):
         self._cooldowns[key] = now
 
         xp, level = db.get_user_xp(message.guild.id, message.author.id)
-        xp += random.randint(XP_MIN, XP_MAX)
+        gained = random.randint(XP_MIN, XP_MAX)
+        gained = round(gained * XP_MULTIPLIERS.get(message.author.id, 1))
+        xp += gained
         new_level = level_from_xp(xp)
         db.set_user_xp(message.guild.id, message.author.id, xp, new_level)
 
