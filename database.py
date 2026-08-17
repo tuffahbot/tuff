@@ -100,6 +100,21 @@ def _create_tables(conn):
         conn.execute("ALTER TABLE guild_settings ADD COLUMN mod_app_channel_id INTEGER")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE guild_settings ADD COLUMN automod_enabled INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE guild_settings ADD COLUMN mod_role_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS automod_words (
+            guild_id INTEGER NOT NULL,
+            word TEXT NOT NULL,
+            PRIMARY KEY (guild_id, word)
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS polls (
             message_id INTEGER PRIMARY KEY,
@@ -189,6 +204,68 @@ def clear_autorole(guild_id: int):
             INSERT INTO guild_settings (guild_id, autorole_id) VALUES (?, NULL)
             ON CONFLICT(guild_id) DO UPDATE SET autorole_id = NULL
         """, (guild_id,))
+
+
+def get_mod_role(guild_id: int) -> int | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT mod_role_id FROM guild_settings WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+        return row["mod_role_id"] if row and row["mod_role_id"] else None
+
+
+def set_mod_role(guild_id: int, role_id: int):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO guild_settings (guild_id, mod_role_id) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET mod_role_id = excluded.mod_role_id
+        """, (guild_id, role_id))
+
+
+def clear_mod_role(guild_id: int):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO guild_settings (guild_id, mod_role_id) VALUES (?, NULL)
+            ON CONFLICT(guild_id) DO UPDATE SET mod_role_id = NULL
+        """, (guild_id,))
+
+
+def get_automod_enabled(guild_id: int) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT automod_enabled FROM guild_settings WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+        return bool(row["automod_enabled"]) if row else False
+
+
+def set_automod_enabled(guild_id: int, enabled: bool):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO guild_settings (guild_id, automod_enabled) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET automod_enabled = excluded.automod_enabled
+        """, (guild_id, int(enabled)))
+
+
+def add_automod_word(guild_id: int, word: str) -> bool:
+    """Returns True if newly added, False if it was already filtered."""
+    with get_conn() as conn:
+        try:
+            conn.execute("INSERT INTO automod_words (guild_id, word) VALUES (?, ?)", (guild_id, word))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def remove_automod_word(guild_id: int, word: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM automod_words WHERE guild_id = ? AND word = ?", (guild_id, word))
+        return cur.rowcount > 0
+
+
+def get_automod_words(guild_id: int) -> list[str]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT word FROM automod_words WHERE guild_id = ?", (guild_id,)).fetchall()
+        return [r["word"] for r in rows]
 
 
 
