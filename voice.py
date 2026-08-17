@@ -42,6 +42,13 @@ def lock_bypass_targets(guild: discord.Guild) -> list[discord.Role]:
     return targets
 
 
+def is_staff_member(member: discord.Member) -> bool:
+    """True if `member` holds the owner role, admin role, or the (configured
+    or fallback) mod role -- the same roles that can bypass a locked temp VC."""
+    staff_role_ids = {role.id for role in lock_bypass_targets(member.guild)}
+    return any(role.id in staff_role_ids for role in member.roles)
+
+
 class RenameModal(discord.ui.Modal, title="Rename Voice Channel"):
     name = discord.ui.TextInput(label="New channel name", max_length=100)
 
@@ -260,6 +267,9 @@ def control_panel_text(owner: discord.Member) -> str:
     )
 
 
+STAFF_STATUS_TEXT = "🛡️ Moderator here"
+
+
 class JoinToCreate(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -270,6 +280,18 @@ class JoinToCreate(commands.Cog):
         # see find_owner_id(), which reads it back from the channel's own
         # permission overwrites.
         self.bot.add_view(VoiceControlView())
+
+    async def _update_staff_status(self, channel: discord.VoiceChannel):
+        """Sets the little status text under the channel's name to flag that
+        a staff member is connected, or clears it once none are left."""
+        staff_present = any(is_staff_member(m) for m in channel.members)
+        desired = STAFF_STATUS_TEXT if staff_present else ""
+        if channel.status == desired:
+            return  # avoid a pointless edit call when nothing actually changed
+        try:
+            await channel.edit(status=desired)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -296,7 +318,8 @@ class JoinToCreate(commands.Cog):
             except discord.HTTPException:
                 pass
 
-        # Left a temp channel and it's now empty -> delete it
+        # Left a temp channel -> delete it if empty, otherwise refresh the
+        # status in case the person who left was the moderator.
         if before.channel and before.channel.id in self.temp_channels:
             if len(before.channel.members) == 0:
                 try:
@@ -305,6 +328,14 @@ class JoinToCreate(commands.Cog):
                     pass
                 finally:
                     self.temp_channels.pop(before.channel.id, None)
+            else:
+                await self._update_staff_status(before.channel)
+
+        # Joined a temp channel -> refresh the status in case a staff member
+        # (owner/admin/mod role) just joined.
+        joined_new_channel = after.channel and (before.channel is None or before.channel.id != after.channel.id)
+        if joined_new_channel and after.channel.id in self.temp_channels:
+            await self._update_staff_status(after.channel)
 
     # ---------------- Admin: unlock / cleanup broken temp channels ----------------
     # Covers the case where a temp channel gets locked and then stranded --
