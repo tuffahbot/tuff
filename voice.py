@@ -1,8 +1,12 @@
+import logging
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 import database as db
+
+log = logging.getLogger("bot.voice")
 
 # Hardcoded server-specific role IDs that can always join a locked temp VC,
 # regardless of any /modrole configuration.
@@ -290,8 +294,15 @@ class JoinToCreate(commands.Cog):
             return  # avoid a pointless edit call when nothing actually changed
         try:
             await channel.edit(status=desired)
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        except discord.Forbidden:
+            # Setting a voice channel status needs the "Manage Channel"
+            # permission on THIS specific channel -- if the bot's role only
+            # has it at the category/guild level but something (a channel
+            # overwrite, a permission sync issue) is blocking it here, this
+            # is what fires. Logged instead of swallowed so it shows up.
+            log.warning(f"Missing permission to set voice status in #{channel.name} ({channel.id}) -- bot needs Manage Channel on that channel.")
+        except discord.HTTPException as e:
+            log.warning(f"Failed to set voice status in #{channel.name} ({channel.id}): {e}")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -307,12 +318,13 @@ class JoinToCreate(commands.Cog):
                 await new_channel.set_permissions(
                     member, manage_channels=True, move_members=True, reason="Channel owner"
                 )
+                self.temp_channels[new_channel.id] = member.id  # register before move_to fires a new voice-state event
                 await member.move_to(new_channel, reason="Join-to-create")
-                self.temp_channels[new_channel.id] = member.id
                 try:
                     await new_channel.send(content=control_panel_text(member), view=VoiceControlView())
                 except discord.Forbidden:
                     pass
+                await self._update_staff_status(new_channel)  # covers the case where the owner themself is staff
             except discord.Forbidden:
                 pass
             except discord.HTTPException:
