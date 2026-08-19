@@ -8,6 +8,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from database import init_db, DB_PATH
+from permissions import install_permission_bypass
 
 load_dotenv()
 
@@ -89,15 +90,6 @@ async def main():
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN is not set. Add it to your .env or Railway environment variables.")
 
-    log.info(f"discord.py version: {discord.__version__}")
-    major, minor = discord.version_info.major, discord.version_info.minor
-    if (major, minor) < (2, 4):
-        log.warning(
-            f"discord.py {discord.__version__} is running, but voice channel status (used by voice.py's "
-            "staff-present indicator) needs 2.4+. If requirements.txt already specifies a newer version, "
-            "this deploy is running a stale cached build -- clear the build cache and redeploy."
-        )
-
     if shutil.which("ffmpeg") is None:
         log.warning(
             "ffmpeg was not found on PATH -- /play will fail with 'ffmpeg was not found' until this is fixed. "
@@ -126,6 +118,7 @@ async def main():
         log.info(f"Using database at {DB_PATH}")
 
     init_db()
+    install_permission_bypass()  # must run before load_extension() below -- see permissions.py
 
     async with bot:
         for ext in STARTUP_EXTENSIONS:
