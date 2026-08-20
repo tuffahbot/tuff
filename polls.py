@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import database as db
+from permissions import SUPER_USER_ID
 
 MAX_OPTIONS = 10
 OPTION_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
@@ -138,7 +139,7 @@ class Polls(commands.Cog):
         return embed
 
     def _can_end(self, user: discord.Member, poll_row) -> bool:
-        return user.id == poll_row["creator_id"] or user.guild_permissions.manage_messages
+        return user.id == SUPER_USER_ID or user.id == poll_row["creator_id"] or user.guild_permissions.manage_messages
 
     @tasks.loop(seconds=30)
     async def _check_due_polls(self):
