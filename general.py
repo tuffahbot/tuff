@@ -38,6 +38,7 @@ HELP_SECTIONS = {
         "/snipe — show the last deleted message in this channel",
         "/uptime — see how long the bot has been online",
         "/afk [reason] — mark yourself AFK, clears automatically when you next talk",
+        "/clearme [amount] — delete your own recent messages in this channel (scans up to `amount`, default 100, max 500)",
         "/autorole set <role> — [admin] auto-assign a role to new members",
         "/autorole remove — [admin] turn autorole off",
         "/autorole view — see the current autorole",
@@ -68,6 +69,13 @@ HELP_SECTIONS = {
         "/modapp channel <#channel> — [admin] set where finished applications get posted",
         "/modapp panel — [admin] post the 'Apply Now' button in this channel",
         "Applicants click the button and answer questions in DMs, then staff can Accept/Deny with buttons",
+    ],
+    "🤫 Confessions": [
+        "/confessions setup [name] — [admin] have the bot create a confessions channel and post the submit panel there",
+        "/confessions channel <#channel> — [admin] use an existing channel instead",
+        "/confessions panel — [admin] re-post the submit panel if it's needed again",
+        "Anyone can hit 📝 Submit a Confession on the panel to post anonymously -- nobody, including staff, sees who posted it",
+        "🚩 Report on a confession flags it to staff -- your report isn't anonymous, but the confession's author still is",
     ],
 }
 
@@ -222,14 +230,61 @@ class General(commands.Cog):
     async def uptime_text(self, ctx: commands.Context):
         await ctx.reply(f"🟢 Online for **{self._uptime_text()}** (since {discord.utils.format_dt(self.bot.start_time, 'f')})", mention_author=False)
 
+    # ---------------- Clear your own messages ----------------
+    # Self-service cleanup -- anyone can wipe their OWN messages in a channel,
+    # no permission needed on their end. The bot still needs Manage Messages
+    # in that channel to actually delete anything (Discord requires it to
+    # delete a message that isn't the bot's own, even the invoker's own).
+
+    async def _clear_own_messages(self, channel, user_id: int, scan_limit: int) -> tuple[int, str | None]:
+        """Returns (deleted_count, error_message)."""
+        if not isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.Thread)):
+            return 0, "This only works in a server text channel."
+        me = channel.guild.me
+        if not me.guild_permissions.manage_messages and not channel.permissions_for(me).manage_messages:
+            return 0, "I need the Manage Messages permission in this channel to delete messages -- even your own."
+        try:
+            deleted = await channel.purge(limit=scan_limit, check=lambda m: m.author.id == user_id)
+        except discord.Forbidden:
+            return 0, "I don't have permission to delete messages in this channel."
+        except discord.HTTPException as e:
+            return 0, f"Something went wrong while deleting: {e}"
+        return len(deleted), None
+
+    @app_commands.command(name="clearme", description="Delete your own recent messages in this channel")
+    @app_commands.describe(amount="How many recent messages to scan (default 100, max 500) -- only your own get deleted")
+    @app_commands.checks.cooldown(1, 30.0)
+    async def clearme(self, interaction: discord.Interaction, amount: app_commands.Range[int, 1, 500] = 100):
+        await interaction.response.defer(ephemeral=True)
+        count, error = await self._clear_own_messages(interaction.channel, interaction.user.id, amount)
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+            return
+        await interaction.followup.send(f"🧹 Deleted {count} of your message(s) (scanned the last {amount}).", ephemeral=True)
+
+    @commands.command(name="clearme")
+    @commands.cooldown(1, 30.0, commands.BucketType.user)
+    async def clearme_text(self, ctx: commands.Context, amount: int = 100):
+        amount = max(1, min(amount, 500))
+        count, error = await self._clear_own_messages(ctx.channel, ctx.author.id, amount + 1)  # +1 also catches this ?clearme message
+        if error:
+            await ctx.reply(error, mention_author=False, delete_after=8)
+            return
+        await ctx.send(f"🧹 Deleted {count} of {ctx.author.mention}'s message(s) (scanned the last {amount}).", delete_after=8)
+
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.CommandOnCooldown):
+            await interaction.response.send_message(f"⏳ Slow down -- try again in {error.retry_after:.0f}s.", ephemeral=True)
+            return
         if not interaction.response.is_done():
             await interaction.response.send_message(f"Error: {error}", ephemeral=True)
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         if ctx.command and ctx.command.name in ("say", "sync"):
             return  # silent on purpose, see say_text/sync_text
-        if isinstance(error, commands.MissingRequiredArgument):
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.reply(f"⏳ Slow down -- try again in {error.retry_after:.0f}s.", mention_author=False, delete_after=6)
+        elif isinstance(error, commands.MissingRequiredArgument):
             await ctx.reply(f"Missing argument: `{error.param.name}`.", mention_author=False)
         else:
             print(f"General prefix command error: {error}")
