@@ -45,6 +45,7 @@ STARTUP_EXTENSIONS = (
     "modapps",
     "afk",
     "automod",
+    "confessions",
 )
 
 
