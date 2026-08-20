@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from logsutil import send_log
+from permissions import SUPER_USER_ID
 
 
 class Roles(commands.Cog):
@@ -27,7 +28,7 @@ class Roles(commands.Cog):
                 f"I can't manage **{role.name}** because it's above (or equal to) my own top role. "
                 "Move my role above it in Server Settings → Roles first."
             )
-        if not invoker.guild_permissions.administrator and role >= invoker.top_role:
+        if invoker.id != SUPER_USER_ID and not invoker.guild_permissions.administrator and role >= invoker.top_role:
             return f"You can't assign **{role.name}** since it's above (or equal to) your own top role."
         return None
 
