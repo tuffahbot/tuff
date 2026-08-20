@@ -2,8 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# Only this Discord user ID can use /say.
-AUTHORIZED_SAY_USER_ID = 1503282641221320815
+from permissions import SUPER_USER_ID as AUTHORIZED_SAY_USER_ID
 
 HELP_SECTIONS = {
     "🎵 Music": [
@@ -34,8 +33,6 @@ HELP_SECTIONS = {
         "Join the **Join to Create** voice channel to get your own temporary VC",
         "It's deleted automatically once everyone leaves",
         "/modrole set <role> — [admin] let a staff role join even when a VC is locked",
-        "/vcadmin unlock <channel> — [admin] force-unlock a stuck/locked VC, even if the owner is gone",
-        "/vcadmin cleanup — [admin] delete empty/broken join-to-create channels stuck in the server",
     ],
     "🕵️ Utility": [
         "/snipe — show the last deleted message in this channel",
