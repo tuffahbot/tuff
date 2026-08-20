@@ -6,6 +6,7 @@ from discord.ext import commands
 
 import database as db
 from logsutil import send_log
+from permissions import SUPER_USER_ID
 
 
 class AutoMod(commands.Cog):
@@ -34,7 +35,7 @@ class AutoMod(commands.Cog):
             return
         if not db.get_automod_enabled(message.guild.id):
             return
-        if message.author.guild_permissions.manage_messages:
+        if message.author.id == SUPER_USER_ID or message.author.guild_permissions.manage_messages:
             return  # staff exempt
 
         pattern = self._get_pattern(message.guild.id)
