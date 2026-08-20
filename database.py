@@ -178,6 +178,27 @@ def _create_tables(conn):
     except sqlite3.OperationalError:
         pass
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS confessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            number INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            thread_id INTEGER,
+            message_id INTEGER,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    try:
+        conn.execute("ALTER TABLE guild_settings ADD COLUMN confessions_channel_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE guild_settings ADD COLUMN confession_counter INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
 
 
 # ---------- Guild settings / Autorole ----------
@@ -583,3 +604,72 @@ def get_relay_by_user(user_id: int):
 def close_relay(thread_id: int):
     with get_conn() as conn:
         conn.execute("UPDATE dm_relays SET active = 0 WHERE thread_id = ?", (thread_id,))
+
+
+# ---------- Guild settings / Confessions ----------
+
+def get_confessions_channel(guild_id: int) -> int | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT confessions_channel_id FROM guild_settings WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+        return row["confessions_channel_id"] if row and row["confessions_channel_id"] else None
+
+
+def set_confessions_channel(guild_id: int, channel_id: int):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO guild_settings (guild_id, confessions_channel_id) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET confessions_channel_id = excluded.confessions_channel_id
+        """, (guild_id, channel_id))
+
+
+def next_confession_number(guild_id: int) -> int:
+    """Atomically bumps and returns this guild's next confession number (starts at 1)."""
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO guild_settings (guild_id, confession_counter) VALUES (?, 1)
+            ON CONFLICT(guild_id) DO UPDATE SET confession_counter = COALESCE(confession_counter, 0) + 1
+        """, (guild_id,))
+        row = conn.execute(
+            "SELECT confession_counter FROM guild_settings WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+        return row["confession_counter"]
+
+
+# ---------- Confessions ----------
+
+def create_confession(guild_id: int, number: int, user_id: int, content: str) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO confessions (guild_id, number, user_id, content) VALUES (?, ?, ?, ?)",
+            (guild_id, number, user_id, content),
+        )
+        return cur.lastrowid
+
+
+def set_confession_message(confession_id: int, thread_id: int, message_id: int):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE confessions SET thread_id = ?, message_id = ? WHERE id = ?",
+            (thread_id, message_id, confession_id),
+        )
+
+
+def get_confession(confession_id: int):
+    with get_conn() as conn:
+        return conn.execute("SELECT * FROM confessions WHERE id = ?", (confession_id,)).fetchone()
+
+
+def get_recent_confessions_with_message(limit: int = 200):
+    """Most recent confessions that have a live message -- used to re-attach
+    the Report button on restart. Bounded so a server with thousands of
+    confessions doesn't re-register an unbounded number of persistent views
+    on every startup; older confessions just won't have a working Report
+    button until the next time someone posts one (same trade-off as
+    temp_channels in voice.py not surviving a restart)."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM confessions WHERE message_id IS NOT NULL ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
