@@ -6,6 +6,7 @@ from discord.ext import commands
 
 import database as db
 from logsutil import send_log
+from permissions import SUPER_USER_ID
 
 # ---------------------------------------------------------------------------
 # Rank hierarchy: Owner > Administrator > Moderator > everyone else.
@@ -26,6 +27,8 @@ ROLE_TIERS = {
 
 
 def get_tier(member: discord.Member) -> int:
+    if member.id == SUPER_USER_ID:
+        return TIER_OWNER + 1  # always outranks everyone -- can moderate anyone, including other Owners
     return max((ROLE_TIERS.get(role.id, 0) for role in member.roles), default=0)
 
 
