@@ -10,15 +10,15 @@ log = logging.getLogger("bot.voice")
 
 # Hardcoded server-specific role IDs that can always join a locked temp VC,
 # regardless of any /modrole configuration.
-OWNER_ROLE_ID = 1536175409199194202
-ADMIN_ROLE_ID = 1536186361378381924
+OWNER_ROLE_ID = 1540124311522779327
+ADMIN_ROLE_ID = 1540124807000105040
 # Used as the mod-role fallback when no /modrole has been configured -- same
 # role modapps.py auto-assigns when a mod application is accepted.
-FALLBACK_MOD_ROLE_ID = 1536186651632738335
+FALLBACK_MOD_ROLE_ID = 1540150015182372956 
 
 # Joining this channel creates a fresh temp voice channel for that member and
 # moves them into it. The temp channel is auto-deleted once everyone leaves.
-TRIGGER_CHANNEL_ID = 1536207314074472528
+TRIGGER_CHANNEL_ID = 1540174154123321384
 
 
 def find_owner_id(channel: discord.VoiceChannel) -> int | None:
