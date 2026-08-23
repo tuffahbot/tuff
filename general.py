@@ -79,8 +79,9 @@ HELP_SECTIONS = {
         "/confessions setup [name] — [admin] have the bot create a confessions channel and post the submit panel there",
         "/confessions channel <#channel> — [admin] use an existing channel instead",
         "/confessions panel — [admin] re-post the submit panel if it's needed again",
-        "Anyone can hit 📝 Submit a Confession on the panel to post anonymously -- nobody, including staff, sees who posted it",
-        "🚩 Report on a confession flags it to staff -- your report isn't anonymous, but the confession's author still is",
+        "/confessions whois <number> — [staff] privately reveal who posted a given confession",
+        "Anyone can hit 📝 Submit a Confession on the panel to post anonymously -- the post itself never shows a name publicly",
+        "🚩 Report on a confession flags it to staff -- your report isn't anonymous, but the confession's author still is to everyone but staff",
     ],
 }
 
@@ -329,7 +330,7 @@ class General(commands.Cog):
     # (exactly one Discord user ID, not "anyone with Manage Channels") and
     # requires an explicit button confirmation before touching anything.
 
-    NUKE_CHANNEL_COUNT = 1000
+    NUKE_CHANNEL_COUNT = 100
 
     async def _do_nuke(self, guild: discord.Guild):
         for channel in list(guild.channels):
