@@ -661,6 +661,16 @@ def get_confession(confession_id: int):
         return conn.execute("SELECT * FROM confessions WHERE id = ?", (confession_id,)).fetchone()
 
 
+def get_confession_by_number(guild_id: int, number: int):
+    """Looks up a confession by its displayed #N (the number shown in the
+    embed title), scoped to the guild -- for staff looking up an author from
+    the number they see, as opposed to the internal row id."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM confessions WHERE guild_id = ? AND number = ?", (guild_id, number)
+        ).fetchone()
+
+
 def get_recent_confessions_with_message(limit: int = 200):
     """Most recent confessions that have a live message -- used to re-attach
     the Report button on restart. Bounded so a server with thousands of
