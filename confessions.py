@@ -6,6 +6,7 @@ from discord.ext import commands
 
 import database as db
 from logsutil import send_log
+from moderation import has_mod_access
 
 MAX_CONFESSION_LENGTH = 1500
 CONFESSION_COOLDOWN_SECONDS = 60
@@ -196,7 +197,7 @@ class Confessions(commands.Cog):
             return
         await interaction.response.send_modal(ConfessionModal(self))
 
-    confessions_group = app_commands.Group(name="confessions", description="Configure anonymous confessions", default_permissions=discord.Permissions(manage_guild=True))
+    confessions_group = app_commands.Group(name="confessions", description="Configure anonymous confessions")
 
     @confessions_group.command(name="setup", description="[Admin] Create a new confessions channel with the submit panel")
     @app_commands.describe(name="Channel name (default: confessions)")
@@ -254,9 +255,32 @@ class Confessions(commands.Cog):
             return
         await interaction.response.send_message(f"✅ Panel re-posted in {channel.mention}.", ephemeral=True)
 
+    @confessions_group.command(name="whois", description="[Staff] Reveal who posted a confession by its number")
+    @app_commands.describe(number="The confession's #number, shown in its title")
+    @has_mod_access(manage_guild=True)
+    async def confessions_whois(self, interaction: discord.Interaction, number: int):
+        row = db.get_confession_by_number(interaction.guild_id, number)
+        if row is None:
+            await interaction.response.send_message(f"No confession numbered #{number} found in this server.", ephemeral=True)
+            return
+
+        author = interaction.guild.get_member(row["user_id"])
+        author_text = author.mention if author else f"<@{row['user_id']}> (ID: {row['user_id']}, not in the server anymore)"
+        embed = discord.Embed(
+            title=f"🕵️ Confession #{number}",
+            description=f"**Posted by:** {author_text}\n\n{row['content'][:1000]}",
+            color=discord.Color.dark_purple(),
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.set_footer(text="Staff-only -- this stays private to whoever ran the command")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message("You need the Manage Server permission to do that.", ephemeral=True)
+        if isinstance(error, (app_commands.MissingPermissions, app_commands.CheckFailure)):
+            await interaction.response.send_message(
+                "You don't have permission to use this command (need the Owner/Administrator/Moderator role, or Manage Server).",
+                ephemeral=True,
+            )
         else:
             if not interaction.response.is_done():
                 await interaction.response.send_message(f"Error: {error}", ephemeral=True)
