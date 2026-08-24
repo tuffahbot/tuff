@@ -198,6 +198,10 @@ def _create_tables(conn):
         conn.execute("ALTER TABLE guild_settings ADD COLUMN confession_counter INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE guild_settings ADD COLUMN suggestions_channel_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ship_overrides (
@@ -632,6 +636,24 @@ def set_confessions_channel(guild_id: int, channel_id: int):
         conn.execute("""
             INSERT INTO guild_settings (guild_id, confessions_channel_id) VALUES (?, ?)
             ON CONFLICT(guild_id) DO UPDATE SET confessions_channel_id = excluded.confessions_channel_id
+        """, (guild_id, channel_id))
+
+
+# ---------- Guild settings / Suggestions ----------
+
+def get_suggestions_channel(guild_id: int) -> int | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT suggestions_channel_id FROM guild_settings WHERE guild_id = ?", (guild_id,)
+        ).fetchone()
+        return row["suggestions_channel_id"] if row and row["suggestions_channel_id"] else None
+
+
+def set_suggestions_channel(guild_id: int, channel_id: int):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO guild_settings (guild_id, suggestions_channel_id) VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET suggestions_channel_id = excluded.suggestions_channel_id
         """, (guild_id, channel_id))
 
 
