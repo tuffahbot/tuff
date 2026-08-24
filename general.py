@@ -52,6 +52,8 @@ HELP_SECTIONS = {
     ],
     "🎈 Fun": [
         "/ship <member> [member2] — see how compatible two people are (defaults to you)",
+        "/shipset <member1> <member2> <percent> — [admin] pin a fixed compatibility % for a pair, instead of random",
+        "/shipclear <member1> <member2> — [admin] remove a pinned percent, back to random",
     ],
     "😀 Emoji": [
         "/steal <emoji> — [needs Manage Emojis] copy pasted emoji into this server (or reply to a message with none)",
