@@ -90,8 +90,10 @@ HELP_SECTIONS = {
         "/suggestions setup [name] — [admin] have the bot create a suggestions channel and post the submit panel there",
         "/suggestions channel <#channel> — [admin] use an existing channel instead",
         "/suggestions panel — [admin] re-post the submit panel if it's needed again",
+        "/suggestions status <message_id> <status> — [staff] mark a suggestion Reviewing/Planned/In Progress/Added/Declined by editing it in place -- no repost, no re-ping",
         "/suggest — same as hitting the panel button: pop up a form and post your idea, with your name attached",
         "Every suggestion gets 👍/👎 reactions added automatically so people can vote on it",
+        "💬 Message on a suggestion lets staff DM the person who posted it, through the bot",
     ],
 }
 
