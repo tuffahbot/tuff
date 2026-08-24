@@ -199,6 +199,17 @@ def _create_tables(conn):
     except sqlite3.OperationalError:
         pass
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ship_overrides (
+            guild_id INTEGER NOT NULL,
+            user_id_low INTEGER NOT NULL,
+            user_id_high INTEGER NOT NULL,
+            percent REAL NOT NULL,
+            set_by INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, user_id_low, user_id_high)
+        )
+    """)
+
 
 
 # ---------- Guild settings / Autorole ----------
@@ -683,3 +694,43 @@ def get_recent_confessions_with_message(limit: int = 200):
             "SELECT * FROM confessions WHERE message_id IS NOT NULL ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
+
+
+# ---------- Ship overrides ----------
+# Pairs are stored with the lower user ID first so a lookup for (A, B) and
+# (B, A) always hits the same row -- ship order doesn't matter.
+
+def _sorted_pair(user_a_id: int, user_b_id: int) -> tuple[int, int]:
+    return (user_a_id, user_b_id) if user_a_id <= user_b_id else (user_b_id, user_a_id)
+
+
+def set_ship_override(guild_id: int, user_a_id: int, user_b_id: int, percent: float, set_by: int):
+    low, high = _sorted_pair(user_a_id, user_b_id)
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO ship_overrides (guild_id, user_id_low, user_id_high, percent, set_by)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id_low, user_id_high)
+            DO UPDATE SET percent = excluded.percent, set_by = excluded.set_by
+        """, (guild_id, low, high, percent, set_by))
+
+
+def get_ship_override(guild_id: int, user_a_id: int, user_b_id: int) -> float | None:
+    low, high = _sorted_pair(user_a_id, user_b_id)
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT percent FROM ship_overrides WHERE guild_id = ? AND user_id_low = ? AND user_id_high = ?",
+            (guild_id, low, high),
+        ).fetchone()
+        return row["percent"] if row else None
+
+
+def remove_ship_override(guild_id: int, user_a_id: int, user_b_id: int) -> bool:
+    """Returns False if there was nothing set to remove."""
+    low, high = _sorted_pair(user_a_id, user_b_id)
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM ship_overrides WHERE guild_id = ? AND user_id_low = ? AND user_id_high = ?",
+            (guild_id, low, high),
+        )
+        return cur.rowcount > 0
