@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from permissions import SUPER_USER_ID as AUTHORIZED_SAY_USER_ID
+from suggestions import SuggestionPanelView
 
 # Trusted people who can also trigger /deletechannels, in addition to
 # AUTHORIZED_SAY_USER_ID -- deliberately a short, named allowlist rather than
@@ -85,6 +86,13 @@ HELP_SECTIONS = {
         "Anyone can hit 📝 Submit a Confession on the panel to post anonymously -- the post itself never shows a name publicly",
         "🚩 Report on a confession flags it to staff -- your report isn't anonymous, but the confession's author still is to everyone but staff",
     ],
+    "💡 Suggestions": [
+        "/suggestions setup [name] — [admin] have the bot create a suggestions channel and post the submit panel there",
+        "/suggestions channel <#channel> — [admin] use an existing channel instead",
+        "/suggestions panel — [admin] re-post the submit panel if it's needed again",
+        "/suggest — same as hitting the panel button: pop up a form and post your idea, with your name attached",
+        "Every suggestion gets 👍/👎 reactions added automatically so people can vote on it",
+    ],
 }
 
 
@@ -147,13 +155,22 @@ class General(commands.Cog):
         message="What to say",
         channel="Where to say it (defaults to this channel)",
         reply_to="Message ID to reply to (must be in the target channel)",
+        suggestion_button="Attach a '💡 Suggest an Update' button to the message",
     )
-    async def say(self, interaction: discord.Interaction, message: str, channel: discord.TextChannel = None, reply_to: str = None):
+    async def say(self, interaction: discord.Interaction, message: str, channel: discord.TextChannel = None, reply_to: str = None, suggestion_button: bool = False):
         if interaction.user.id != AUTHORIZED_SAY_USER_ID:
             await interaction.response.send_message("You can't use this command.", ephemeral=True)
             return
 
         target = channel or interaction.channel
+
+        view = None
+        if suggestion_button:
+            suggestions_cog = self.bot.get_cog("Suggestions")
+            if suggestions_cog is None:
+                await interaction.response.send_message("The Suggestions feature isn't loaded, so I can't attach that button.", ephemeral=True)
+                return
+            view = SuggestionPanelView(suggestions_cog)
 
         reference = None
         if reply_to:
@@ -172,7 +189,7 @@ class General(commands.Cog):
                 return
 
         try:
-            await target.send(message, reference=reference, mention_author=False)
+            await target.send(message, reference=reference, mention_author=False, view=view)
         except discord.Forbidden:
             await interaction.response.send_message(f"I don't have permission to send messages in {target.mention}.", ephemeral=True)
             return
