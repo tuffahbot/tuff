@@ -46,6 +46,7 @@ STARTUP_EXTENSIONS = (
     "afk",
     "automod",
     "confessions",
+    "suggestions",
 )
 
 
