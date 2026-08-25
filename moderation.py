@@ -396,7 +396,7 @@ class Moderation(commands.Cog):
     @commands.command(name="ban")
     async def ban_text(self, ctx: commands.Context, member: discord.Member, *, reason: str = "No reason provided"):
         if not self._has_access(ctx.author, ban_members=True):
-            await self._deny(ctx, "You don't have permission to do that.")
+            await self._deny(ctx, "You don't have permission to ban members.")
             return
         if not await self._hierarchy_ok(ctx, member):
             return
