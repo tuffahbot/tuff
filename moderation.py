@@ -20,9 +20,9 @@ TIER_ADMIN = 2
 TIER_MOD = 1
 
 ROLE_TIERS = {
-    1540124311522779327: TIER_OWNER,
-    1540124807000105040: TIER_ADMIN,
-    1540150015182372956: TIER_MOD,
+    1536175409199194202: TIER_OWNER,
+    1536186361378381924: TIER_ADMIN,
+    1536186651632738335: TIER_MOD,
 }
 
 
@@ -36,6 +36,8 @@ def can_moderate(actor: discord.Member, target: discord.Member) -> bool:
     """Whether actor is allowed to run a moderation action on target."""
     if actor.id == target.id:
         return False
+    if target.id == target.guild.me.id:
+        return False  # never let the bot target itself -- e.g. self-banning removes it from the server entirely
     target_tier = get_tier(target)
     if target_tier == 0:
         return True  # regular members are fair game for anyone with command access
@@ -182,6 +184,8 @@ class Moderation(commands.Cog):
             return True
         if interaction.user.id == target.id:
             msg = "You can't use that on yourself."
+        elif target.id == interaction.guild.me.id:
+            msg = "You can't use that on me."
         else:
             msg = "You can't moderate someone at your rank or above."
         await interaction.response.send_message(msg, ephemeral=True)
@@ -352,7 +356,12 @@ class Moderation(commands.Cog):
     async def _hierarchy_ok(self, ctx: commands.Context, target: discord.Member) -> bool:
         if can_moderate(ctx.author, target):
             return True
-        msg = "You can't use that on yourself." if ctx.author.id == target.id else "You can't moderate someone at your rank or above."
+        if ctx.author.id == target.id:
+            msg = "You can't use that on yourself."
+        elif target.id == ctx.guild.me.id:
+            msg = "You can't use that on me."
+        else:
+            msg = "You can't moderate someone at your rank or above."
         await self._deny(ctx, msg)
         return False
 
