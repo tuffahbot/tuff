@@ -1,13 +1,16 @@
+import asyncio
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from logsutil import send_log
 from permissions import SUPER_USER_ID
+
+ROLEALL_MAX_CONCURRENT = 5  # keep Discord's role-edit rate limit happy
 
 
 class Roles(commands.Cog):
-    """Manual role management -- /rolegive and /roleremove.
+    """Manual role management -- /rolegive, /roleremove, /roleall, /rolecreate.
 
     Different from autorole.py, which handles the role auto-assigned on
     member join. This is for one-off "give this person this role" actions.
@@ -40,7 +43,6 @@ class Roles(commands.Cog):
         if role in member.roles:
             return None, f"{member.mention} already has {role.mention}."
         await member.add_roles(role, reason=f"Given by {invoker}")
-        await self._log(invoker, member, role, "Given")
         return f"✅ Gave {role.mention} to {member.mention}.", None
 
     async def _remove(self, guild: discord.Guild, invoker: discord.Member, member: discord.Member, role: discord.Role) -> tuple[str | None, str | None]:
@@ -50,18 +52,65 @@ class Roles(commands.Cog):
         if role not in member.roles:
             return None, f"{member.mention} doesn't have {role.mention}."
         await member.remove_roles(role, reason=f"Removed by {invoker}")
-        await self._log(invoker, member, role, "Removed")
         return f"🧹 Removed {role.mention} from {member.mention}.", None
 
-    async def _log(self, invoker: discord.Member, member: discord.Member, role: discord.Role, verb: str):
-        embed = discord.Embed(
-            title=f"⚙️ Role {verb}",
-            description=f"{invoker.mention} {verb.lower()} {role.mention} {'to' if verb == 'Given' else 'from'} {member.mention}.",
-            color=discord.Color.blurple(),
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.set_footer(text=f"By {invoker} ({invoker.id})")
-        await send_log(self.bot, embed)
+    async def _give_all(self, guild: discord.Guild, invoker: discord.Member, role: discord.Role, include_bots: bool) -> tuple[int, int, int, str | None]:
+        """Returns (given_count, already_had_count, failed_count, error)."""
+        problem = self._check(guild, invoker, role)
+        if problem:
+            return 0, 0, 0, problem
+
+        eligible = [m for m in guild.members if include_bots or not m.bot]
+        already_had = sum(1 for m in eligible if role in m.roles)
+        targets = [m for m in eligible if role not in m.roles]
+
+        sem = asyncio.Semaphore(ROLEALL_MAX_CONCURRENT)
+        given = 0
+        failed = 0
+
+        async def give_one(member: discord.Member):
+            nonlocal given, failed
+            async with sem:
+                try:
+                    await member.add_roles(role, reason=f"/roleall by {invoker}")
+                    given += 1
+                except discord.HTTPException:
+                    failed += 1
+
+        await asyncio.gather(*(give_one(m) for m in targets))
+        return given, already_had, failed, None
+
+    def _give_all_summary(self, role: discord.Role, given: int, already_had: int, failed: int) -> str:
+        summary = f"✅ Gave {role.mention} to **{given}** member(s). {already_had} already had it."
+        if failed:
+            summary += f" **{failed}** failed (likely a permissions/hierarchy issue on that member specifically)."
+        return summary
+
+    async def _create_role(
+        self, guild: discord.Guild, invoker: discord.Member, name: str, color_str: str | None, hoist: bool, mentionable: bool
+    ) -> tuple[discord.Role | None, str | None, str | None]:
+        """Returns (role, warning, error) -- role is None only if error is set."""
+        me = guild.me
+        if not me.guild_permissions.manage_roles:
+            return None, None, "I need the Manage Roles permission to create roles."
+        if len(guild.roles) >= 250:
+            return None, None, "This server already has Discord's max of 250 roles -- delete one first."
+
+        color = discord.Color.default()
+        warning = None
+        if color_str:
+            try:
+                color = discord.Color.from_str(color_str if color_str.startswith("#") else f"#{color_str}")
+            except ValueError:
+                warning = f"Couldn't parse `{color_str}` as a color (try a hex code like `#ff0000`) -- created with no color instead."
+
+        try:
+            role = await guild.create_role(name=name, colour=color, hoist=hoist, mentionable=mentionable, reason=f"Created by {invoker}")
+        except discord.Forbidden:
+            return None, None, "Discord refused to create that role -- check my Manage Roles permission."
+        except discord.HTTPException as e:
+            return None, None, f"Something went wrong creating the role: {e}"
+        return role, warning, None
 
     # ---------------- Slash commands ----------------
 
@@ -78,6 +127,35 @@ class Roles(commands.Cog):
     async def roleremove(self, interaction: discord.Interaction, member: discord.Member, role: discord.Role):
         result, error = await self._remove(interaction.guild, interaction.user, member, role)
         await interaction.response.send_message(error or result, ephemeral=bool(error))
+
+    @app_commands.command(name="roleall", description="[Admin] Give a role to every member in the server")
+    @app_commands.describe(role="Which role to give everyone", include_bots="Also give it to bot accounts (default: no)")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def roleall(self, interaction: discord.Interaction, role: discord.Role, include_bots: bool = False):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        given, already_had, failed, error = await self._give_all(interaction.guild, interaction.user, role, include_bots)
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+            return
+        await interaction.followup.send(self._give_all_summary(role, given, already_had, failed), ephemeral=True)
+
+    @app_commands.command(name="rolecreate", description="[Admin] Create a new role")
+    @app_commands.describe(
+        name="The role's name",
+        color="Hex color code, e.g. #ff0000 (optional)",
+        hoist="Show this role separately in the member list (default: no)",
+        mentionable="Let anyone @mention this role (default: no)",
+    )
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def rolecreate(self, interaction: discord.Interaction, name: str, color: str = None, hoist: bool = False, mentionable: bool = False):
+        role, warning, error = await self._create_role(interaction.guild, interaction.user, name, color, hoist, mentionable)
+        if error:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+        msg = f"✅ Created {role.mention}."
+        if warning:
+            msg += f"\n⚠️ {warning}"
+        await interaction.response.send_message(msg)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
@@ -100,6 +178,28 @@ class Roles(commands.Cog):
         result, error = await self._remove(ctx.guild, ctx.author, member, role)
         await ctx.reply(error or result, mention_author=False)
 
+    @commands.command(name="roleall")
+    @commands.has_permissions(manage_roles=True)
+    async def roleall_text(self, ctx: commands.Context, role: discord.Role, include_bots: bool = False):
+        status = await ctx.reply(f"⏳ Giving {role.mention} to everyone -- this can take a bit for a big server.", mention_author=False)
+        given, already_had, failed, error = await self._give_all(ctx.guild, ctx.author, role, include_bots)
+        if error:
+            await status.edit(content=error)
+            return
+        await status.edit(content=self._give_all_summary(role, given, already_had, failed))
+
+    @commands.command(name="rolecreate")
+    @commands.has_permissions(manage_roles=True)
+    async def rolecreate_text(self, ctx: commands.Context, *, name: str):
+        role, warning, error = await self._create_role(ctx.guild, ctx.author, name, None, False, False)
+        if error:
+            await ctx.reply(error, mention_author=False)
+            return
+        msg = f"✅ Created {role.mention}."
+        if warning:
+            msg += f"\n⚠️ {warning}"
+        await ctx.reply(msg, mention_author=False)
+
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         if isinstance(error, commands.MissingPermissions):
             await ctx.reply("You need the Manage Roles permission to do that.", mention_author=False)
@@ -108,7 +208,11 @@ class Roles(commands.Cog):
         elif isinstance(error, commands.RoleNotFound):
             await ctx.reply("Couldn't find that role -- try the exact name or mention it.", mention_author=False)
         elif isinstance(error, commands.MissingRequiredArgument):
-            await ctx.reply(f"Usage: `{ctx.prefix}rolegive <member> <role>` or `{ctx.prefix}roleremove <member> <role>`", mention_author=False)
+            await ctx.reply(
+                f"Usage: `{ctx.prefix}rolegive <member> <role>`, `{ctx.prefix}roleremove <member> <role>`, "
+                f"`{ctx.prefix}roleall <role>`, or `{ctx.prefix}rolecreate <name>`",
+                mention_author=False,
+            )
         else:
             print(f"Roles prefix command error: {error}")
 
