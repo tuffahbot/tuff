@@ -50,6 +50,8 @@ HELP_SECTIONS = {
         "/autorole view — see the current autorole",
         "/rolegive <member> <role> — [admin] give someone a role",
         "/roleremove <member> <role> — [admin] take a role away",
+        "/roleall <role> [include_bots] — [admin] give a role to every member in the server",
+        "/rolecreate <name> [color] [hoist] [mentionable] — [admin] create a new role",
     ],
     "🎈 Fun": [
         "/ship <member> [member2] — see how compatible two people are (defaults to you)",
