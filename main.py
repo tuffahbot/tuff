@@ -47,6 +47,7 @@ STARTUP_EXTENSIONS = (
     "automod",
     "confessions",
     "suggestions",
+    "spam67",
 )
 
 
