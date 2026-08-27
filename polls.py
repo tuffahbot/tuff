@@ -24,24 +24,42 @@ def parse_duration(text: str) -> timedelta | None:
     return timedelta(seconds=amount * DURATION_UNITS[unit])
 
 
-def build_poll_embed(question: str, options: list[str], counts: dict, total: int, *, ended: bool = False, ends_at: datetime = None, creator=None) -> discord.Embed:
+def build_poll_embed(
+    question: str, options: list[str], counts: dict, total: int, *, ended: bool = False, ends_at: datetime = None, creator=None,
+    rig_option_index: int | None = None, rig_bonus_votes: int = 0,
+) -> discord.Embed:
+    display_counts = dict(counts)
+    display_total = total
+    if rig_option_index is not None and rig_bonus_votes:
+        display_counts[rig_option_index] = display_counts.get(rig_option_index, 0) + rig_bonus_votes
+        display_total += rig_bonus_votes
+
     lines = []
     for i, opt in enumerate(options):
-        count = counts.get(i, 0)
-        pct = int((count / total) * 100) if total else 0
-        bar_len = int((count / total) * 14) if total else 0
+        count = display_counts.get(i, 0)
+        pct = int((count / display_total) * 100) if display_total else 0
+        bar_len = int((count / display_total) * 14) if display_total else 0
         bar = "🟩" * bar_len + "⬜" * (14 - bar_len)
         lines.append(f"{OPTION_EMOJIS[i]} **{opt}**\n{bar} `{count} vote(s) · {pct}%`")
 
+    title_prefix = "🎭 [RIGGED] " if rig_option_index is not None else ""
     embed = discord.Embed(
-        title=("🔒 Poll Ended: " if ended else "📊 ") + question,
+        title=("🔒 Poll Ended: " if ended else "📊 ") + title_prefix + question,
         description="\n\n".join(lines),
         color=discord.Color.dark_gray() if ended else discord.Color.blurple(),
         timestamp=discord.utils.utcnow(),
     )
+    if rig_option_index is not None:
+        embed.add_field(
+            name="🎭 Rigged for Fun",
+            value=f"{OPTION_EMOJIS[rig_option_index]} **{options[rig_option_index]}** starts with **+{rig_bonus_votes}** bonus votes, openly -- not a secret, just a bit.",
+            inline=False,
+        )
     if not ended and ends_at:
         embed.add_field(name="Closes", value=discord.utils.format_dt(ends_at, "R"), inline=False)
-    footer = f"{total} total vote(s)"
+    footer = f"{display_total} total vote(s)"
+    if rig_option_index is not None:
+        footer += f" ({total} real + {rig_bonus_votes} rigged)"
     if creator:
         footer += f" · Poll by {creator}"
     embed.set_footer(text=footer)
@@ -101,10 +119,16 @@ class Polls(commands.Cog):
         counts = db.get_poll_vote_counts(message_id)
         total = sum(counts.values())
         ends_at = datetime.fromisoformat(poll_row["ends_at"]) if poll_row["ends_at"] else None
-        embed = build_poll_embed(poll_row["question"], options, counts, total, ends_at=ends_at, creator=f"<@{poll_row['creator_id']}>")
+        embed = build_poll_embed(
+            poll_row["question"], options, counts, total, ends_at=ends_at, creator=f"<@{poll_row['creator_id']}>",
+            rig_option_index=poll_row["rig_option_index"], rig_bonus_votes=poll_row["rig_bonus_votes"] or 0,
+        )
         await interaction.response.edit_message(embed=embed, view=PollView(self, message_id, options))
 
-    async def create_poll(self, channel: discord.abc.Messageable, guild_id: int, creator, question: str, options: list[str], duration_str: str | None):
+    async def create_poll(
+        self, channel: discord.abc.Messageable, guild_id: int, creator, question: str, options: list[str], duration_str: str | None,
+        rig_option_index: int | None = None, rig_bonus_votes: int = 0,
+    ):
         """Returns (message, error_message)."""
         ends_at = None
         if duration_str:
@@ -113,11 +137,14 @@ class Polls(commands.Cog):
                 return None, "Couldn't parse that duration -- try something like `30m`, `2h`, or `1d`."
             ends_at = datetime.now(timezone.utc) + delta
 
-        embed = build_poll_embed(question, options, {}, 0, ends_at=ends_at, creator=str(creator))
+        embed = build_poll_embed(
+            question, options, {}, 0, ends_at=ends_at, creator=str(creator),
+            rig_option_index=rig_option_index, rig_bonus_votes=rig_bonus_votes,
+        )
         message = await channel.send(embed=embed)
         view = PollView(self, message.id, options)
         await message.edit(view=view)
-        db.create_poll(message.id, guild_id, channel.id, question, options, creator.id, ends_at.isoformat() if ends_at else None)
+        db.create_poll(message.id, guild_id, channel.id, question, options, creator.id, ends_at.isoformat() if ends_at else None, rig_option_index, rig_bonus_votes)
         self.bot.add_view(view, message_id=message.id)
         return message, None
 
@@ -128,7 +155,10 @@ class Polls(commands.Cog):
         counts = db.get_poll_vote_counts(message_id)
         total = sum(counts.values())
         db.mark_poll_ended(message_id)
-        embed = build_poll_embed(poll_row["question"], options, counts, total, ended=True, creator=f"<@{poll_row['creator_id']}>")
+        embed = build_poll_embed(
+            poll_row["question"], options, counts, total, ended=True, creator=f"<@{poll_row['creator_id']}>",
+            rig_option_index=poll_row["rig_option_index"], rig_bonus_votes=poll_row["rig_bonus_votes"] or 0,
+        )
 
         try:
             channel = self.bot.get_channel(poll_row["channel_id"]) or await self.bot.fetch_channel(poll_row["channel_id"])
@@ -177,6 +207,37 @@ class Polls(commands.Cog):
             return
         await interaction.followup.send(f"Poll started: {message.jump_url}", ephemeral=True)
 
+    @poll.command(name="riggedcreate", description="[Admin] Start a poll with one option openly boosted by bonus votes")
+    @app_commands.describe(
+        question="The poll question",
+        options="Answer choices separated by commas (2-10)",
+        rig_option="Which option gets the bonus votes (1-based, matches the order in 'options')",
+        rig_votes="How many bonus votes to openly add to that option (shown in the poll, not hidden)",
+        duration="Optional auto-close time, e.g. 30m, 2h, 1d",
+    )
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def poll_riggedcreate(self, interaction: discord.Interaction, question: str, options: str, rig_option: app_commands.Range[int, 1, MAX_OPTIONS], rig_votes: app_commands.Range[int, 1, 1000000], duration: str = None):
+        opts = [o.strip() for o in options.split(",") if o.strip()]
+        if len(opts) < 2:
+            await interaction.response.send_message("Give at least 2 options, separated by commas.", ephemeral=True)
+            return
+        if len(opts) > MAX_OPTIONS:
+            await interaction.response.send_message(f"Max {MAX_OPTIONS} options.", ephemeral=True)
+            return
+        if rig_option > len(opts):
+            await interaction.response.send_message(f"`rig_option` {rig_option} is out of range -- you only gave {len(opts)} option(s).", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        message, error = await self.create_poll(
+            interaction.channel, interaction.guild_id, interaction.user, question, opts, duration,
+            rig_option_index=rig_option - 1, rig_bonus_votes=rig_votes,
+        )
+        if error:
+            await interaction.followup.send(error, ephemeral=True)
+            return
+        await interaction.followup.send(f"🎭 Rigged poll started (openly labeled, not secret): {message.jump_url}", ephemeral=True)
+
     @poll.command(name="end", description="End a poll early and lock in the results")
     @app_commands.describe(message_id="The poll message's ID (right-click the poll -> Copy Message ID)")
     async def poll_end(self, interaction: discord.Interaction, message_id: str):
@@ -197,8 +258,11 @@ class Polls(commands.Cog):
         await interaction.followup.send("✅ Poll ended.", ephemeral=True)
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if not interaction.response.is_done():
-            await interaction.response.send_message(f"Error: {error}", ephemeral=True)
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message("You need the Manage Messages permission to do that.", ephemeral=True)
+        else:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"Error: {error}", ephemeral=True)
 
     # ---------------- Prefix commands (?poll ...) ----------------
 
@@ -207,7 +271,8 @@ class Polls(commands.Cog):
         await ctx.reply(
             f"Usage: `{ctx.prefix}poll create <question> | <option1> | <option2> [| more options] [| duration]`\n"
             f"Example: `{ctx.prefix}poll create Best pizza topping? | Pepperoni | Mushroom | Pineapple | 1h`\n"
-            f"`{ctx.prefix}poll end <message_id>`",
+            f"`{ctx.prefix}poll end <message_id>`\n"
+            "`/poll riggedcreate` (slash only) -- openly boost one option with bonus votes",
             mention_author=False,
         )
 
