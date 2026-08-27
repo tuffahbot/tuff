@@ -32,6 +32,7 @@ HELP_SECTIONS = {
     ],
     "📊 Polls": [
         "/poll create <question> <options> [duration] — options comma-separated (2-10), duration e.g. `30m`, `2h`, `1d`",
+        "/poll riggedcreate <question> <options> <rig_option> <rig_votes> [duration] — [admin] same as create, but one option openly starts with bonus votes, clearly labeled 🎭 in the poll itself",
         "/poll end <message_id> — end a poll early (creator or mod)",
         "Vote by clicking the buttons — results update live",
     ],
