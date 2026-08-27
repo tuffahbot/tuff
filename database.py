@@ -202,6 +202,14 @@ def _create_tables(conn):
         conn.execute("ALTER TABLE guild_settings ADD COLUMN suggestions_channel_id INTEGER")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE polls ADD COLUMN rig_option_index INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE polls ADD COLUMN rig_bonus_votes INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ship_overrides (
@@ -449,12 +457,15 @@ def remove_giveaway_entry(message_id: int, user_id: int) -> bool:
 
 # ---------- Polls ----------
 
-def create_poll(message_id: int, guild_id: int, channel_id: int, question: str, options: list[str], creator_id: int, ends_at_iso: str | None):
+def create_poll(
+    message_id: int, guild_id: int, channel_id: int, question: str, options: list[str], creator_id: int, ends_at_iso: str | None,
+    rig_option_index: int | None = None, rig_bonus_votes: int = 0,
+):
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO polls (message_id, guild_id, channel_id, question, options, creator_id, ends_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (message_id, guild_id, channel_id, question, json.dumps(options), creator_id, ends_at_iso),
+            "INSERT INTO polls (message_id, guild_id, channel_id, question, options, creator_id, ends_at, rig_option_index, rig_bonus_votes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (message_id, guild_id, channel_id, question, json.dumps(options), creator_id, ends_at_iso, rig_option_index, rig_bonus_votes),
         )
 
 
