@@ -23,6 +23,8 @@ HELP_SECTIONS = {
         "/setuplevelroles — [admin] create the Level 5/10/25/50 roles (with starter perks)",
         "/give_xp, /remove_xp — [admin] manually adjust a member's XP",
         "/resetxp — [admin] wipe XP/levels for the whole server",
+        "/xpboostpanel — [admin] post the daily XP boost button in this channel",
+        "⚡ Claim on that panel gives 5x XP for 1 hour, once every 24 hours -- tracked separately per person",
     ],
     "🎉 Giveaways": [
         "/giveaway start <prize> <duration> <winners> — [admin] e.g. duration `10m`, `2h`, `1d`",
