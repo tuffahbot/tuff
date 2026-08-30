@@ -10,15 +10,15 @@ log = logging.getLogger("bot.voice")
 
 # Hardcoded server-specific role IDs that can always join a locked temp VC,
 # regardless of any /modrole configuration.
-OWNER_ROLE_ID = 1540124311522779327
-ADMIN_ROLE_ID = 1540124807000105040
-# Used as the mod-role fallback when no /modrole has been configured -- same
-# role modapps.py auto-assigns when a mod application is accepted.
-FALLBACK_MOD_ROLE_ID = 1540150015182372956 
+OWNER_ROLE_ID = 1543457938478473348
+CO_OWNER_ROLE_ID = 1543457941485658132
+ADMIN_ROLE_ID = 1543460074259882034
+# Used as the mod-role fallback when no /modrole has been configured.
+FALLBACK_MOD_ROLE_ID = 1543460211031801856
 
 # Joining this channel creates a fresh temp voice channel for that member and
 # moves them into it. The temp channel is auto-deleted once everyone leaves.
-TRIGGER_CHANNEL_ID = 1540174154123321384
+TRIGGER_CHANNEL_ID = 1543458862227652658
 
 
 def find_owner_id(channel: discord.VoiceChannel) -> int | None:
@@ -34,8 +34,9 @@ def find_owner_id(channel: discord.VoiceChannel) -> int | None:
 
 def lock_bypass_targets(guild: discord.Guild) -> list[discord.Role]:
     """Roles that should still be able to join a locked temp VC: the owner
-    role, the admin role, and the configured (or fallback) mod role."""
-    role_ids = [OWNER_ROLE_ID, ADMIN_ROLE_ID, db.get_mod_role(guild.id) or FALLBACK_MOD_ROLE_ID]
+    role, the co-owner role, the admin role, and the configured (or
+    fallback) mod role."""
+    role_ids = [OWNER_ROLE_ID, CO_OWNER_ROLE_ID, ADMIN_ROLE_ID, db.get_mod_role(guild.id) or FALLBACK_MOD_ROLE_ID]
 
     targets = []
     for role_id in role_ids:
@@ -47,8 +48,9 @@ def lock_bypass_targets(guild: discord.Guild) -> list[discord.Role]:
 
 
 def is_staff_member(member: discord.Member) -> bool:
-    """True if `member` holds the owner role, admin role, or the (configured
-    or fallback) mod role -- the same roles that can bypass a locked temp VC."""
+    """True if `member` holds the owner role, co-owner role, admin role, or
+    the (configured or fallback) mod role -- the same roles that can bypass
+    a locked temp VC."""
     staff_role_ids = {role.id for role in lock_bypass_targets(member.guild)}
     return any(role.id in staff_role_ids for role in member.roles)
 
