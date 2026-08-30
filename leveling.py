@@ -42,8 +42,8 @@ LEVEL_COLORS = {
     50: discord.Color.gold(),
 }
 
-XP_MIN, XP_MAX = 50, 250        # xp awarded per eligible message (was 15-25)
-XP_COOLDOWN_SECONDS = 5      # per-user cooldown to prevent spam-leveling (was 60)
+XP_MIN, XP_MAX = 5, 20        # xp awarded per eligible message (was 15-25)
+XP_COOLDOWN_SECONDS = 30      # per-user cooldown to prevent spam-leveling (was 60)
 XP_BOOST_MULTIPLIER = 5       # applied when db.has_active_xp_boost() is true -- keep in sync with BOOST_MULTIPLIER in xpboost.py
 
 
