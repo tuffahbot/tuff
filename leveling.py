@@ -44,6 +44,7 @@ LEVEL_COLORS = {
 
 XP_MIN, XP_MAX = 8, 15        # xp awarded per eligible message (was 15-25)
 XP_COOLDOWN_SECONDS = 90      # per-user cooldown to prevent spam-leveling (was 60)
+XP_BOOST_MULTIPLIER = 5       # applied when db.has_active_xp_boost() is true -- keep in sync with BOOST_MULTIPLIER in xpboost.py
 
 
 def xp_for_level(level: int) -> int:
@@ -116,7 +117,10 @@ class Leveling(commands.Cog):
         self._cooldowns[key] = now
 
         xp, level = db.get_user_xp(message.guild.id, message.author.id)
-        xp += random.randint(XP_MIN, XP_MAX)
+        gained = random.randint(XP_MIN, XP_MAX)
+        if db.has_active_xp_boost(message.guild.id, message.author.id):
+            gained *= XP_BOOST_MULTIPLIER
+        xp += gained
         new_level = level_from_xp(xp)
         db.set_user_xp(message.guild.id, message.author.id, xp, new_level)
 
