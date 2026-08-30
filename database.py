@@ -15,16 +15,33 @@ from datetime import datetime, timezone
 
 DB_PATH = os.getenv("DB_PATH", "bot.db").strip()
 
+# Reused across every call instead of opening/closing a fresh SQLite
+# connection each time -- that per-call connect()/close() overhead was
+# happening on every command AND every single message (leveling + automod
+# both check the DB per-message), so this is a broad, always-on speedup
+# rather than something that only helps one command.
+_connection: sqlite3.Connection | None = None
+
+
+def _get_connection() -> sqlite3.Connection:
+    global _connection
+    if _connection is None:
+        _connection = sqlite3.connect(DB_PATH, check_same_thread=False)
+        _connection.row_factory = sqlite3.Row
+        _connection.execute("PRAGMA journal_mode=WAL")    # readers don't block writers, and vice versa
+        _connection.execute("PRAGMA synchronous=NORMAL")  # safe with WAL, meaningfully faster than the default FULL
+    return _connection
+
 
 @contextmanager
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = _get_connection()
     try:
         yield conn
         conn.commit()
-    finally:
-        conn.close()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def init_db():
