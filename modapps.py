@@ -35,7 +35,7 @@ QUESTIONS = [
 APPLY_CUSTOM_ID = "modapp_apply_button"
 QUESTION_TIMEOUT = 600  # seconds per question before the application auto-cancels
 
-MOD_ROLE_ID = 1536186651632738335  # given automatically when an application is accepted
+TRIAL_MOD_ROLE_ID = 1538731669954109492  # given automatically when an application is accepted (trial period, not full mod)
 
 
 class ApplyView(discord.ui.View):
@@ -294,7 +294,7 @@ class ModApps(commands.Cog):
 
         role_warning = None
         if decision == "accepted":
-            role_warning = await self._assign_mod_role(interaction.guild, app_row["user_id"], interaction.user)
+            role_warning = await self._assign_trial_mod_role(interaction.guild, app_row["user_id"], interaction.user)
 
         try:
             if decision == "accepted":
@@ -313,15 +313,15 @@ class ModApps(commands.Cog):
         if role_warning:
             await interaction.followup.send(role_warning, ephemeral=True)
 
-    async def _assign_mod_role(self, guild: discord.Guild, user_id: int, granter) -> str | None:
-        """Gives the accepted applicant the mod role. Returns a warning string if it couldn't."""
-        role = guild.get_role(MOD_ROLE_ID)
+    async def _assign_trial_mod_role(self, guild: discord.Guild, user_id: int, granter) -> str | None:
+        """Gives the accepted applicant the trial mod role. Returns a warning string if it couldn't."""
+        role = guild.get_role(TRIAL_MOD_ROLE_ID)
         if role is None:
-            return "⚠️ Accepted, but the configured mod role no longer exists -- check `MOD_ROLE_ID` in `modapps.py`."
+            return "⚠️ Accepted, but the configured trial mod role no longer exists -- check `TRIAL_MOD_ROLE_ID` in `modapps.py`."
 
         me = guild.me
         if not me.guild_permissions.manage_roles:
-            return "⚠️ Accepted, but I don't have the Manage Roles permission -- couldn't assign the mod role."
+            return "⚠️ Accepted, but I don't have the Manage Roles permission -- couldn't assign the trial mod role."
         if role >= me.top_role:
             return f"⚠️ Accepted, but **{role.name}** is above my own top role -- move my role above it to auto-assign."
 
@@ -330,10 +330,10 @@ class ModApps(commands.Cog):
             try:
                 member = await guild.fetch_member(user_id)
             except discord.NotFound:
-                return "⚠️ Accepted, but that member isn't in the server anymore -- couldn't assign the mod role."
+                return "⚠️ Accepted, but that member isn't in the server anymore -- couldn't assign the trial mod role."
 
         try:
-            await member.add_roles(role, reason=f"Mod application accepted by {granter}")
+            await member.add_roles(role, reason=f"Mod application accepted by {granter} (trial)")
         except discord.Forbidden:
             return "⚠️ Accepted, but Discord refused the role assignment -- check permissions/hierarchy."
         return None
