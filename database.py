@@ -11,6 +11,7 @@ import os
 import sqlite3
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 DB_PATH = os.getenv("DB_PATH", "bot.db").strip()
 
@@ -210,6 +211,15 @@ def _create_tables(conn):
         conn.execute("ALTER TABLE polls ADD COLUMN rig_bonus_votes INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS xp_boosts (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            expires_at TEXT,
+            last_claimed_at TEXT,
+            PRIMARY KEY (guild_id, user_id)
+        )
+    """)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ship_overrides (
@@ -767,3 +777,27 @@ def remove_ship_override(guild_id: int, user_a_id: int, user_b_id: int) -> bool:
             (guild_id, low, high),
         )
         return cur.rowcount > 0
+
+
+# ---------- XP boosts ----------
+
+def get_xp_boost(guild_id: int, user_id: int):
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM xp_boosts WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
+        ).fetchone()
+
+
+def claim_xp_boost(guild_id: int, user_id: int, expires_at_iso: str, claimed_at_iso: str):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO xp_boosts (guild_id, user_id, expires_at, last_claimed_at) VALUES (?, ?, ?, ?)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET expires_at = excluded.expires_at, last_claimed_at = excluded.last_claimed_at
+        """, (guild_id, user_id, expires_at_iso, claimed_at_iso))
+
+
+def has_active_xp_boost(guild_id: int, user_id: int) -> bool:
+    row = get_xp_boost(guild_id, user_id)
+    if row is None or not row["expires_at"]:
+        return False
+    return datetime.fromisoformat(row["expires_at"]) > datetime.now(timezone.utc)
