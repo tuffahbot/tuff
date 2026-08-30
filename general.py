@@ -103,6 +103,26 @@ HELP_SECTIONS = {
 }
 
 
+class HelpSelect(discord.ui.Select):
+    def __init__(self, cog: "General"):
+        self.cog = cog
+        options = []
+        for section in HELP_SECTIONS:
+            emoji, _, label = section.partition(" ")
+            options.append(discord.SelectOption(label=label[:100], emoji=emoji, value=section))
+        super().__init__(placeholder="Choose a category...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        section = self.values[0]
+        await interaction.response.edit_message(embed=self.cog._help_section_embed(section), view=self.view)
+
+
+class HelpView(discord.ui.View):
+    def __init__(self, cog: "General"):
+        super().__init__(timeout=180)
+        self.add_item(HelpSelect(cog))
+
+
 class ConfirmNukeView(discord.ui.View):
     def __init__(self, cog: "General", author_id: int, guild: discord.Guild):
         super().__init__(timeout=30)
@@ -137,25 +157,32 @@ class General(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    def _help_embed(self, guild: discord.Guild = None) -> discord.Embed:
+    def _help_overview_embed(self, guild: discord.Guild = None) -> discord.Embed:
         embed = discord.Embed(
-            title="Bot Commands",
-            description="Every command below works either as a slash command (`/command`) or typed out with `?` (`?command`).",
+            title="📖 Bot Commands",
+            description=(
+                "Every command works either as a slash command (`/command`) or typed out with `?` (`?command`).\n\n"
+                "Pick a category from the dropdown below to see what's in it."
+            ),
             color=discord.Color.blurple(),
         )
+        embed.add_field(name="Categories", value="\n".join(HELP_SECTIONS.keys()), inline=False)
         if guild and guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
-        for section, lines in HELP_SECTIONS.items():
-            embed.add_field(name=section, value="\n".join(lines), inline=False)
+        return embed
+
+    def _help_section_embed(self, section: str) -> discord.Embed:
+        embed = discord.Embed(title=section, description="\n".join(HELP_SECTIONS[section]), color=discord.Color.blurple())
+        embed.set_footer(text="Use the dropdown to view another category")
         return embed
 
     @app_commands.command(name="help", description="Everything this bot can do")
     async def help(self, interaction: discord.Interaction):
-        await interaction.response.send_message(embed=self._help_embed(interaction.guild), ephemeral=True)
+        await interaction.response.send_message(embed=self._help_overview_embed(interaction.guild), view=HelpView(self), ephemeral=True)
 
     @commands.command(name="help")
     async def help_text(self, ctx: commands.Context):
-        await ctx.reply(embed=self._help_embed(ctx.guild), mention_author=False)
+        await ctx.reply(embed=self._help_overview_embed(ctx.guild), view=HelpView(self), mention_author=False)
 
     @app_commands.command(name="say", description="Make the bot say something")
     @app_commands.describe(
