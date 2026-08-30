@@ -9,15 +9,13 @@ from permissions import SUPER_USER_ID as AUTHORIZED_SAY_USER_ID
 SPAM_CHANNEL_ID = 1541766493258260550
 SPAM_MESSAGE = "67"
 SPAM_INTERVAL_SECONDS = 1.5
-SPAM_MAX_MESSAGES = 200  # safety cap -- auto-stops after ~5 min even if nobody runs the off command
 
 
 class Spam67(commands.Cog):
     """Owner-only novelty toggle -- NOT for real spam. Paced at 1.5s/message
-    (well under Discord's rate limits) and capped at SPAM_MAX_MESSAGES so it
-    can never run away unattended, since sustained rapid-fire messages from
-    a bot risk Discord's own automated abuse detection regardless of which
-    server/channel it's in."""
+    (well under Discord's rate limits) so sustained use doesn't trip
+    Discord's own automated abuse detection. Runs until /spam67 off, a bot
+    restart, or the cog unloading -- no message cap, so don't forget it's on."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -32,7 +30,7 @@ class Spam67(commands.Cog):
 
     async def _loop(self, channel: discord.TextChannel):
         try:
-            for _ in range(SPAM_MAX_MESSAGES):
+            while True:
                 try:
                     await channel.send(SPAM_MESSAGE)
                 except discord.HTTPException:
@@ -41,7 +39,7 @@ class Spam67(commands.Cog):
         except asyncio.CancelledError:
             pass
         finally:
-            self._task = None  # lets /spam67 on work again, whether this ended via cancel or hitting the cap
+            self._task = None  # lets /spam67 on work again after a stop
 
     async def _start(self) -> str:
         if self._running():
@@ -50,10 +48,7 @@ class Spam67(commands.Cog):
         if channel is None:
             return "Can't find the configured channel -- check SPAM_CHANNEL_ID in spam67.py."
         self._task = asyncio.create_task(self._loop(channel))
-        return (
-            f"🟢 Started -- posting \"{SPAM_MESSAGE}\" in {channel.mention} every {SPAM_INTERVAL_SECONDS}s. "
-            f"Auto-stops after {SPAM_MAX_MESSAGES} messages, or run this again with `off`."
-        )
+        return f"🟢 Started -- posting \"{SPAM_MESSAGE}\" in {channel.mention} every {SPAM_INTERVAL_SECONDS}s. Runs until you run this again with `off`."
 
     async def _stop(self) -> str:
         if not self._running():
