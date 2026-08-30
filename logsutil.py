@@ -1,6 +1,6 @@
 import discord
 
-LOGS_CHANNEL_ID = 1540180770369306664
+LOGS_CHANNEL_ID = 1543459712731844768
 
 
 async def send_log(bot, embed: discord.Embed):
