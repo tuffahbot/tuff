@@ -48,6 +48,7 @@ STARTUP_EXTENSIONS = (
     "confessions",
     "suggestions",
     "spam67",
+    "xpboost",
 )
 
 
