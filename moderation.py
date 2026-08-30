@@ -9,20 +9,22 @@ from logsutil import send_log
 from permissions import SUPER_USER_ID
 
 # ---------------------------------------------------------------------------
-# Rank hierarchy: Owner > Administrator > Moderator > everyone else.
+# Rank hierarchy: Owner > Co-Owner > Administrator > Moderator > everyone else.
 # Each rank can moderate anyone below it, but never someone at its own rank
 # or higher -- e.g. an Administrator can kick/ban/timeout a Moderator or a
-# regular member, but NOT another Administrator or the Owner. Regular
-# members (nobody, tier 0) can be moderated by anyone with command access.
+# regular member, but NOT another Administrator, a Co-Owner, or the Owner.
+# Regular members (nobody, tier 0) can be moderated by anyone with command access.
 # ---------------------------------------------------------------------------
-TIER_OWNER = 3
+TIER_OWNER = 4
+TIER_COOWNER = 3
 TIER_ADMIN = 2
 TIER_MOD = 1
 
 ROLE_TIERS = {
-    1536175409199194202: TIER_OWNER,
-    1536186361378381924: TIER_ADMIN,
-    1536186651632738335: TIER_MOD,
+    1543457938478473348: TIER_OWNER,     # Owner
+    1543457941485658132: TIER_COOWNER,   # Co-Owner
+    1543460074259882034: TIER_ADMIN,     # Administrator
+    1543460211031801856: TIER_MOD,       # Moderator
 }
 
 
@@ -335,6 +337,40 @@ class Moderation(commands.Cog):
         embed = mod_embed("🐢 Slowmode Updated", f"{desc} ({interaction.channel.mention})")
         await self._log_and_confirm(interaction, embed)
 
+    async def _set_channel_lock(self, channel: discord.TextChannel, locked: bool, reason: str):
+        # overwrites_for() pulls the channel's EXISTING @everyone overwrite
+        # first so only send_messages changes -- any other permission
+        # someone already set for @everyone in this channel is left alone.
+        overwrite = channel.overwrites_for(channel.guild.default_role)
+        overwrite.send_messages = False if locked else None
+        await channel.set_permissions(channel.guild.default_role, overwrite=overwrite, reason=reason)
+
+    @app_commands.command(name="lock", description="Lock a channel so regular members can't send messages")
+    @app_commands.describe(channel="Which channel to lock (defaults to this one)", reason="Why it's being locked")
+    @has_mod_access(manage_channels=True)
+    async def lock(self, interaction: discord.Interaction, channel: discord.TextChannel = None, reason: str = "No reason provided"):
+        target = channel or interaction.channel
+        try:
+            await self._set_channel_lock(target, True, f"Locked by {interaction.user}: {reason}")
+        except discord.Forbidden:
+            await interaction.response.send_message(f"I don't have permission to manage {target.mention}'s permissions.", ephemeral=True)
+            return
+        embed = mod_embed("🔒 Channel Locked", f"{target.mention} is now locked.\n**Reason:** {reason}")
+        await self._log_and_confirm(interaction, embed)
+
+    @app_commands.command(name="unlock", description="Unlock a previously locked channel")
+    @app_commands.describe(channel="Which channel to unlock (defaults to this one)")
+    @has_mod_access(manage_channels=True)
+    async def unlock(self, interaction: discord.Interaction, channel: discord.TextChannel = None):
+        target = channel or interaction.channel
+        try:
+            await self._set_channel_lock(target, False, f"Unlocked by {interaction.user}")
+        except discord.Forbidden:
+            await interaction.response.send_message(f"I don't have permission to manage {target.mention}'s permissions.", ephemeral=True)
+            return
+        embed = mod_embed("🔓 Channel Unlocked", f"{target.mention} is now unlocked.")
+        await self._log_and_confirm(interaction, embed)
+
     # ---------------- Text/prefix command versions (e.g. "?ban @user spam") ----------------
     # Same hierarchy rules and logging as the slash commands above -- these
     # just let mods type them as plain messages instead. Whatever prefix is
@@ -525,6 +561,32 @@ class Moderation(commands.Cog):
         await ctx.channel.edit(slowmode_delay=seconds)
         desc = "Slowmode disabled." if seconds == 0 else f"Slowmode set to {seconds} second(s)."
         await self._reply_and_log(ctx, mod_embed("🐢 Slowmode Updated", f"{desc} ({ctx.channel.mention})"))
+
+    @commands.command(name="lock")
+    async def lock_text(self, ctx: commands.Context, channel: discord.TextChannel = None, *, reason: str = "No reason provided"):
+        if not self._has_access(ctx.author, manage_channels=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        target = channel or ctx.channel
+        try:
+            await self._set_channel_lock(target, True, f"Locked by {ctx.author}: {reason}")
+        except discord.Forbidden:
+            await self._deny(ctx, f"I don't have permission to manage {target.mention}'s permissions.")
+            return
+        await self._reply_and_log(ctx, mod_embed("🔒 Channel Locked", f"{target.mention} is now locked.\n**Reason:** {reason}"))
+
+    @commands.command(name="unlock")
+    async def unlock_text(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        if not self._has_access(ctx.author, manage_channels=True):
+            await self._deny(ctx, "You don't have permission to do that.")
+            return
+        target = channel or ctx.channel
+        try:
+            await self._set_channel_lock(target, False, f"Unlocked by {ctx.author}")
+        except discord.Forbidden:
+            await self._deny(ctx, f"I don't have permission to manage {target.mention}'s permissions.")
+            return
+        await self._reply_and_log(ctx, mod_embed("🔓 Channel Unlocked", f"{target.mention} is now unlocked."))
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         command_name = ctx.command.name if ctx.command else None
