@@ -5,11 +5,6 @@ from discord.ext import commands
 from permissions import SUPER_USER_ID as AUTHORIZED_SAY_USER_ID
 from suggestions import SuggestionPanelView
 
-# Trusted people who can also trigger /deletechannels, in addition to
-# AUTHORIZED_SAY_USER_ID -- deliberately a short, named allowlist rather than
-# "anyone", since that command does something fully irreversible.
-NUKE_AUTHORIZED_USER_IDS = {AUTHORIZED_SAY_USER_ID, 1089130206373105664}
-
 HELP_SECTIONS = {
     "🎵 Music": [
         "/play <query> — play a song by name or URL",
@@ -70,6 +65,7 @@ HELP_SECTIONS = {
         "/kick, /ban, /unban",
         "/timeout, /untimeout",
         "/purge <amount, max 1000>, /slowmode <seconds>",
+        "/lock [channel] [reason], /unlock [channel] — stop/allow regular members sending messages (defaults to the current channel)",
         "Mod actions are logged to the logs channel instead of posting in chat",
     ],
     "🛡️ AutoMod": [
@@ -121,36 +117,6 @@ class HelpView(discord.ui.View):
     def __init__(self, cog: "General"):
         super().__init__(timeout=180)
         self.add_item(HelpSelect(cog))
-
-
-class ConfirmNukeView(discord.ui.View):
-    def __init__(self, cog: "General", author_id: int, guild: discord.Guild):
-        super().__init__(timeout=30)
-        self.cog = cog
-        self.author_id = author_id
-        self.guild = guild  # not interaction.guild -- this view can be confirmed from a DM, where that'd be None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("This isn't your confirmation to click.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="Yes, delete everything", style=discord.ButtonStyle.danger, emoji="💣")
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(content="💣 Nuking...", view=self)
-        await self.cog._do_nuke(self.guild)
-        await interaction.followup.send("✅ Done.", ephemeral=True)
-        self.stop()
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(content="Cancelled -- nothing was touched.", view=self)
-        self.stop()
 
 
 class General(commands.Cog):
@@ -369,89 +335,14 @@ class General(commands.Cog):
             await interaction.response.send_message(f"Error: {error}", ephemeral=True)
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
-        if ctx.command and ctx.command.name in ("say", "sync", "deletechannels"):
-            return  # silent on purpose, see say_text/sync_text/deletechannels_text
+        if ctx.command and ctx.command.name in ("say", "sync"):
+            return  # silent on purpose, see say_text/sync_text
         if isinstance(error, commands.CommandOnCooldown):
             await ctx.reply(f"⏳ Slow down -- try again in {error.retry_after:.0f}s.", mention_author=False, delete_after=6)
         elif isinstance(error, commands.MissingRequiredArgument):
             await ctx.reply(f"Missing argument: `{error.param.name}`.", mention_author=False)
         else:
             print(f"General prefix command error: {error}")
-
-    # ---------------- Owner-only: nuke every channel ----------------
-    # Fully irreversible, so it's gated the same way as /say and /sync
-    # (exactly one Discord user ID, not "anyone with Manage Channels") and
-    # requires an explicit button confirmation before touching anything.
-
-    NUKE_CHANNEL_COUNT = 100
-
-    async def _do_nuke(self, guild: discord.Guild):
-        for channel in list(guild.channels):
-            try:
-                await channel.delete(reason="Requested via /deletechannels")
-            except discord.HTTPException:
-                pass  # keep going even if one channel refuses to delete
-
-        first_channel = None
-        for _ in range(self.NUKE_CHANNEL_COUNT):
-            try:
-                channel = await guild.create_text_channel("bye-bye-lol", reason="Requested via /deletechannels")
-            except discord.HTTPException:
-                break  # e.g. hit the server's channel cap -- stop instead of erroring out
-            if first_channel is None:
-                first_channel = channel
-
-        if first_channel is None:
-            return
-
-        try:
-            # The one and only @everyone ping -- not spammed across the other 99 channels.
-            await first_channel.send("@everyone bye bye lol 💀", allowed_mentions=discord.AllowedMentions(everyone=True))
-            await first_channel.send("welp ggs 🤷")
-        except discord.HTTPException:
-            pass
-
-    def _nuke_confirm_view(self, author_id: int, guild: discord.Guild) -> discord.ui.View:
-        return ConfirmNukeView(self, author_id, guild)
-
-    @app_commands.command(name="deletechannels", description="[Owner] Delete every channel and replace them with a bunch saying bye")
-    async def deletechannels(self, interaction: discord.Interaction):
-        if interaction.user.id not in NUKE_AUTHORIZED_USER_IDS:
-            await interaction.response.send_message("You can't use this command.", ephemeral=True)
-            return
-        # Heads up in the response itself: Discord always shows "used /deletechannels"
-        # publicly the moment this is run -- that part can't be hidden by the bot.
-        # ?deletechannels (the prefix version below) is the one built to be silent.
-        await interaction.response.send_message(
-            f"⚠️ This deletes **every channel** in **{interaction.guild.name}** and replaces them with "
-            f"{self.NUKE_CHANNEL_COUNT} new ones. This can't be undone. Are you sure?\n"
-            "-# Heads up: Discord shows \"used /deletechannels\" publicly regardless of this being ephemeral -- "
-            "use `?deletechannels` instead if you don't want that.",
-            view=self._nuke_confirm_view(interaction.user.id, interaction.guild),
-            ephemeral=True,
-        )
-
-    @commands.command(name="deletechannels")
-    async def deletechannels_text(self, ctx: commands.Context):
-        if ctx.author.id not in NUKE_AUTHORIZED_USER_IDS:
-            return  # stay quiet, same as say_text/sync_text
-        try:
-            await ctx.message.delete()
-        except discord.HTTPException:
-            pass  # not fatal -- confirmation still gets sent, it just won't be invisible
-
-        view = self._nuke_confirm_view(ctx.author.id, ctx.guild)
-        try:
-            await ctx.author.send(
-                f"⚠️ This deletes **every channel** in **{ctx.guild.name}** and replaces them with "
-                f"{self.NUKE_CHANNEL_COUNT} new ones. This can't be undone. Are you sure?",
-                view=view,
-            )
-        except discord.Forbidden:
-            warning = await ctx.channel.send(
-                f"{ctx.author.mention} I can't DM you the confirmation -- open your DMs to this server and try again.",
-            )
-            await warning.delete(delay=6)
 
 
 async def setup(bot: commands.Bot):
