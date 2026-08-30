@@ -178,13 +178,16 @@ class Leveling(commands.Cog):
         bar = "▰" * bar_filled + "▱" * (20 - bar_filled)
         percent = int((progress / needed) * 100) if needed else 0
 
+        medal = {1: "🥇 ", 2: "🥈 ", 3: "🥉 "}.get(position, "")
+        rank_text = f"{medal}#{position}" if position else "Unranked"
+
         embed = discord.Embed(
-            title=target.display_name,
+            title=f"{target.display_name}'s Rank",
             description=(
-                f"Level {level} · Rank {f'#{position}' if position else '—'}\n"
-                f"{bar}\n"
-                f"┃ {percent}%\n"
-                f"XP {xp:,} · {progress:,}/{needed:,} to level {level + 1}"
+                f"**Level {level}**  ·  **{rank_text}**\n\n"
+                f"{bar}  `{percent}%`\n"
+                f"{progress:,} / {needed:,} XP to level {level + 1}\n\n"
+                f"-# Total XP: {xp:,}"
             ),
             color=discord.Color.green(),
         )
@@ -196,21 +199,22 @@ class Leveling(commands.Cog):
         rows = db.get_leaderboard(guild.id, limit=10)
         if not rows:
             return None
+
+        medals = ["🥇", "🥈", "🥉"]
         lines = []
         for i, row in enumerate(rows, start=1):
             member = guild.get_member(row["user_id"])
             name = member.display_name if member else f"User {row['user_id']}"
-            lines.append(f"{i}. {name} - lvl {row['level']} ({row['xp']} XP)")
+            rank_marker = medals[i - 1] if i <= 3 else f"`#{i}`"
+            lines.append(f"{rank_marker}  **{name}**  ·  Level {row['level']}  ·  {row['xp']:,} XP")
 
         embed = discord.Embed(
-            title="XP leaderboard",
-            description=(
-                f"{guild.name} · Top 10\n\n"
-                + "\n".join(lines)
-                + "\n\n*May change with each XP message.*"
-            ),
+            title=f"🏆 {guild.name} XP Leaderboard",
+            description="\n".join(lines) + "\n\n-# Updates live as people chat",
             color=discord.Color.gold(),
         )
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
         embed.set_footer(text="Made by Mercyy")
         return embed
 
