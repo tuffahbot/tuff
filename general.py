@@ -69,10 +69,11 @@ HELP_SECTIONS = {
         "Mod actions are logged to the logs channel instead of posting in chat",
     ],
     "🛡️ AutoMod": [
-        "/automod enable, /automod disable — [admin] turn the word filter on/off",
+        "/automod enable, /automod disable — [admin] turn AutoMod on/off (word filter + spam detection together)",
         "/automod addword <word>, /automod removeword <word> — [admin] manage the blocked words",
         "/automod words — see what's currently filtered",
         "Blocked messages are deleted automatically; staff (Manage Messages) are exempt",
+        "5 messages within 5 seconds from the same person gets the latest one deleted as spam",
     ],
     "📋 Mod Applications": [
         "/modapp channel <#channel> — [admin] set where finished applications get posted",
