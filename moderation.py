@@ -19,6 +19,7 @@ TIER_OWNER = 4
 TIER_COOWNER = 3
 TIER_ADMIN = 2
 TIER_MOD = 1
+TOP_TIERS = {TIER_OWNER, TIER_COOWNER}  # Owner and Co-Owner can moderate each other, as peers -- see can_moderate()
 
 ROLE_TIERS = {
     1543457938478473348: TIER_OWNER,     # Owner
@@ -43,6 +44,9 @@ def can_moderate(actor: discord.Member, target: discord.Member) -> bool:
     target_tier = get_tier(target)
     if target_tier == 0:
         return True  # regular members are fair game for anyone with command access
+    actor_tier = get_tier(actor)
+    if actor_tier in TOP_TIERS and target_tier in TOP_TIERS:
+        return True  # Owner <-> Co-Owner: peers, can moderate each other
     return get_tier(actor) > target_tier
 
 
