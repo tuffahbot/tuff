@@ -237,6 +237,13 @@ def _create_tables(conn):
             PRIMARY KEY (guild_id, user_id)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS superadmins (
+            user_id INTEGER PRIMARY KEY,
+            added_by INTEGER,
+            added_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ship_overrides (
@@ -818,3 +825,35 @@ def has_active_xp_boost(guild_id: int, user_id: int) -> bool:
     if row is None or not row["expires_at"]:
         return False
     return datetime.fromisoformat(row["expires_at"]) > datetime.now(timezone.utc)
+
+
+# ---------- Superadmins ----------
+# Global (not per-guild) -- anyone on this list gets Owner-tier moderation
+# standing in moderation.py's get_tier(), everywhere the bot is. Managed
+# exclusively via /superadmin, which only SUPER_USER_ID can use.
+
+def add_superadmin(user_id: int, added_by: int) -> bool:
+    """Returns False if they were already on the list."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO superadmins (user_id, added_by) VALUES (?, ?)", (user_id, added_by)
+        )
+        return cur.rowcount > 0
+
+
+def remove_superadmin(user_id: int) -> bool:
+    """Returns False if they weren't on the list."""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM superadmins WHERE user_id = ?", (user_id,))
+        return cur.rowcount > 0
+
+
+def is_superadmin(user_id: int) -> bool:
+    with get_conn() as conn:
+        return conn.execute("SELECT 1 FROM superadmins WHERE user_id = ?", (user_id,)).fetchone() is not None
+
+
+def get_superadmins() -> list[int]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT user_id FROM superadmins ORDER BY added_at").fetchall()
+        return [row["user_id"] for row in rows]
