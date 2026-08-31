@@ -1,4 +1,6 @@
 import re
+import time
+from collections import deque
 
 import discord
 from discord import app_commands
@@ -8,13 +10,18 @@ import database as db
 from logsutil import send_log
 from permissions import SUPER_USER_ID
 
+SPAM_MESSAGE_THRESHOLD = 5   # this many messages...
+SPAM_WINDOW_SECONDS = 5      # ...within this many seconds gets the latest one deleted
+
 
 class AutoMod(commands.Cog):
-    """Simple banned-word filter. Staff (anyone with Manage Messages) are exempt."""
+    """Banned-word filter + basic spam/flood detection. Staff (anyone with
+    Manage Messages) are exempt from both."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._pattern_cache: dict[int, re.Pattern | None] = {}
+        self._recent_messages: dict[tuple[int, int], deque] = {}  # (guild_id, user_id) -> recent message timestamps
 
     def _get_pattern(self, guild_id: int) -> re.Pattern | None:
         if guild_id not in self._pattern_cache:
@@ -29,6 +36,45 @@ class AutoMod(commands.Cog):
         escaped = [re.escape(w) for w in words]
         self._pattern_cache[guild_id] = re.compile(r"\b(" + "|".join(escaped) + r")\b", re.IGNORECASE)
 
+    async def _check_spam(self, message: discord.Message) -> bool:
+        """Flood/spam detection: SPAM_MESSAGE_THRESHOLD messages within
+        SPAM_WINDOW_SECONDS from the same person gets the latest one deleted.
+        Returns True if this message was handled as spam (so on_message
+        knows not to also run the word filter on an already-deleted message)."""
+        key = (message.guild.id, message.author.id)
+        history = self._recent_messages.setdefault(key, deque(maxlen=SPAM_MESSAGE_THRESHOLD))
+        now = time.monotonic()
+        history.append(now)
+
+        if len(history) < SPAM_MESSAGE_THRESHOLD or now - history[0] > SPAM_WINDOW_SECONDS:
+            return False
+
+        history.clear()  # reset so this doesn't re-trigger on every single message until they actually slow down
+
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            pass
+
+        try:
+            await message.channel.send(f"🛡️ {message.author.mention}, slow down -- that looked like spam.", delete_after=6)
+        except discord.Forbidden:
+            pass
+
+        log_embed = discord.Embed(
+            title="🛡️ AutoMod: Spam Removed",
+            description=(
+                f"**Author:** {message.author.mention}\n"
+                f"**Channel:** {message.channel.mention}\n"
+                f"**Trigger:** {SPAM_MESSAGE_THRESHOLD} messages within {SPAM_WINDOW_SECONDS}s\n"
+                f"**Last message:** {message.content[:1000] or '*(no text content)*'}"
+            ),
+            color=discord.Color.red(),
+            timestamp=discord.utils.utcnow(),
+        )
+        await send_log(self.bot, log_embed)
+        return True
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
@@ -37,6 +83,9 @@ class AutoMod(commands.Cog):
             return
         if message.author.id == SUPER_USER_ID or message.author.guild_permissions.manage_messages:
             return  # staff exempt
+
+        if await self._check_spam(message):
+            return  # already deleted -- don't also run the word filter on it
 
         pattern = self._get_pattern(message.guild.id)
         if pattern is None:
@@ -73,19 +122,19 @@ class AutoMod(commands.Cog):
 
     # ---------------- Slash commands ----------------
 
-    automod = app_commands.Group(name="automod", description="Configure the banned-word filter", default_permissions=discord.Permissions(manage_guild=True))
+    automod = app_commands.Group(name="automod", description="Configure the banned-word filter and spam detection", default_permissions=discord.Permissions(manage_guild=True))
 
-    @automod.command(name="enable", description="[Admin] Turn the word filter on")
+    @automod.command(name="enable", description="[Admin] Turn AutoMod on (word filter + spam detection)")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def automod_enable(self, interaction: discord.Interaction):
         db.set_automod_enabled(interaction.guild_id, True)
-        await interaction.response.send_message("🛡️ AutoMod word filter enabled.", ephemeral=True)
+        await interaction.response.send_message("🛡️ AutoMod enabled (word filter + spam detection).", ephemeral=True)
 
-    @automod.command(name="disable", description="[Admin] Turn the word filter off")
+    @automod.command(name="disable", description="[Admin] Turn AutoMod off (word filter + spam detection)")
     @app_commands.checks.has_permissions(manage_guild=True)
     async def automod_disable(self, interaction: discord.Interaction):
         db.set_automod_enabled(interaction.guild_id, False)
-        await interaction.response.send_message("AutoMod word filter disabled.", ephemeral=True)
+        await interaction.response.send_message("AutoMod disabled.", ephemeral=True)
 
     @automod.command(name="addword", description="[Admin] Add a word/phrase to the filter")
     @app_commands.describe(word="The word or phrase to block")
@@ -142,13 +191,13 @@ class AutoMod(commands.Cog):
     @commands.has_permissions(manage_guild=True)
     async def automod_text_enable(self, ctx: commands.Context):
         db.set_automod_enabled(ctx.guild.id, True)
-        await ctx.reply("🛡️ AutoMod word filter enabled.", mention_author=False)
+        await ctx.reply("🛡️ AutoMod enabled (word filter + spam detection).", mention_author=False)
 
     @automod_text.command(name="disable")
     @commands.has_permissions(manage_guild=True)
     async def automod_text_disable(self, ctx: commands.Context):
         db.set_automod_enabled(ctx.guild.id, False)
-        await ctx.reply("AutoMod word filter disabled.", mention_author=False)
+        await ctx.reply("AutoMod disabled.", mention_author=False)
 
     @automod_text.command(name="addword")
     @commands.has_permissions(manage_guild=True)
