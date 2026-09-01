@@ -86,6 +86,13 @@ class Roles(commands.Cog):
             summary += f" **{failed}** failed (likely a permissions/hierarchy issue on that member specifically)."
         return summary
 
+    def _parse_color(self, color_str: str) -> tuple[discord.Color | None, str | None]:
+        """Returns (color, warning) -- color is None if it couldn't be parsed."""
+        try:
+            return discord.Color.from_str(color_str if color_str.startswith("#") else f"#{color_str}"), None
+        except ValueError:
+            return None, f"Couldn't parse `{color_str}` as a color -- try a hex code like `#ff0000`."
+
     async def _create_role(
         self, guild: discord.Guild, invoker: discord.Member, name: str, color_str: str | None, hoist: bool, mentionable: bool
     ) -> tuple[discord.Role | None, str | None, str | None]:
@@ -99,10 +106,11 @@ class Roles(commands.Cog):
         color = discord.Color.default()
         warning = None
         if color_str:
-            try:
-                color = discord.Color.from_str(color_str if color_str.startswith("#") else f"#{color_str}")
-            except ValueError:
-                warning = f"Couldn't parse `{color_str}` as a color (try a hex code like `#ff0000`) -- created with no color instead."
+            parsed, warning = self._parse_color(color_str)
+            if parsed is not None:
+                color = parsed
+            else:
+                warning += " Created with no color instead."
 
         try:
             role = await guild.create_role(name=name, colour=color, hoist=hoist, mentionable=mentionable, reason=f"Created by {invoker}")
@@ -110,6 +118,39 @@ class Roles(commands.Cog):
             return None, None, "Discord refused to create that role -- check my Manage Roles permission."
         except discord.HTTPException as e:
             return None, None, f"Something went wrong creating the role: {e}"
+        return role, warning, None
+
+    async def _edit_role(
+        self, guild: discord.Guild, invoker: discord.Member, role: discord.Role,
+        name: str | None, color_str: str | None, hoist: bool | None, mentionable: bool | None,
+    ) -> tuple[discord.Role | None, str | None, str | None]:
+        """Returns (role, warning, error) -- only the given fields are changed, everything else is left as-is."""
+        problem = self._check(guild, invoker, role)
+        if problem:
+            return None, None, problem
+
+        changes = {}
+        warning = None
+        if name:
+            changes["name"] = name
+        if color_str:
+            color, warning = self._parse_color(color_str)
+            if color is not None:
+                changes["colour"] = color
+        if hoist is not None:
+            changes["hoist"] = hoist
+        if mentionable is not None:
+            changes["mentionable"] = mentionable
+
+        if not changes:
+            return None, None, "Give at least one thing to change: name, color, hoist, or mentionable."
+
+        try:
+            await role.edit(reason=f"Edited by {invoker}", **changes)
+        except discord.Forbidden:
+            return None, None, "Discord refused to edit that role -- check my Manage Roles permission."
+        except discord.HTTPException as e:
+            return None, None, f"Something went wrong editing the role: {e}"
         return role, warning, None
 
     # ---------------- Slash commands ----------------
@@ -157,6 +198,25 @@ class Roles(commands.Cog):
             msg += f"\n⚠️ {warning}"
         await interaction.response.send_message(msg)
 
+    @app_commands.command(name="roleedit", description="[Admin] Edit an existing role's name, color, hoist, or mentionable")
+    @app_commands.describe(
+        role="Which role to edit",
+        name="New name (leave blank to keep it)",
+        color="New hex color code, e.g. #ff0000 (leave blank to keep it)",
+        hoist="Show this role separately in the member list (leave blank to keep it)",
+        mentionable="Let anyone @mention this role (leave blank to keep it)",
+    )
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def roleedit(self, interaction: discord.Interaction, role: discord.Role, name: str = None, color: str = None, hoist: bool = None, mentionable: bool = None):
+        result, warning, error = await self._edit_role(interaction.guild, interaction.user, role, name, color, hoist, mentionable)
+        if error:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+        msg = f"✅ Updated {result.mention}."
+        if warning:
+            msg += f"\n⚠️ {warning}"
+        await interaction.response.send_message(msg)
+
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
             await interaction.response.send_message("You need the Manage Roles permission to do that.", ephemeral=True)
@@ -200,6 +260,33 @@ class Roles(commands.Cog):
             msg += f"\n⚠️ {warning}"
         await ctx.reply(msg, mention_author=False)
 
+    @commands.command(name="roleedit")
+    @commands.has_permissions(manage_roles=True)
+    async def roleedit_text(self, ctx: commands.Context, role: discord.Role, field: str, *, value: str):
+        field = field.lower()
+        name = color = None
+        hoist = mentionable = None
+        if field == "name":
+            name = value
+        elif field == "color":
+            color = value
+        elif field == "hoist":
+            hoist = value.lower() in ("true", "yes", "on", "1")
+        elif field == "mentionable":
+            mentionable = value.lower() in ("true", "yes", "on", "1")
+        else:
+            await ctx.reply(f"Usage: `{ctx.prefix}roleedit <role> <name|color|hoist|mentionable> <value>`", mention_author=False)
+            return
+
+        result, warning, error = await self._edit_role(ctx.guild, ctx.author, role, name, color, hoist, mentionable)
+        if error:
+            await ctx.reply(error, mention_author=False)
+            return
+        msg = f"✅ Updated {result.mention}."
+        if warning:
+            msg += f"\n⚠️ {warning}"
+        await ctx.reply(msg, mention_author=False)
+
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         if isinstance(error, commands.MissingPermissions):
             await ctx.reply("You need the Manage Roles permission to do that.", mention_author=False)
@@ -210,7 +297,8 @@ class Roles(commands.Cog):
         elif isinstance(error, commands.MissingRequiredArgument):
             await ctx.reply(
                 f"Usage: `{ctx.prefix}rolegive <member> <role>`, `{ctx.prefix}roleremove <member> <role>`, "
-                f"`{ctx.prefix}roleall <role>`, or `{ctx.prefix}rolecreate <name>`",
+                f"`{ctx.prefix}roleall <role>`, `{ctx.prefix}rolecreate <name>`, or "
+                f"`{ctx.prefix}roleedit <role> <name|color|hoist|mentionable> <value>`",
                 mention_author=False,
             )
         else:
