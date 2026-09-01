@@ -9,12 +9,16 @@ from logsutil import send_log
 from permissions import SUPER_USER_ID
 
 # ---------------------------------------------------------------------------
-# Rank hierarchy: Owner > Co-Owner > Administrator > Moderator > everyone else.
+# Rank hierarchy: Lily > Owner > Co-Owner > Administrator > Moderator > everyone else.
 # Each rank can moderate anyone below it, but never someone at its own rank
 # or higher -- e.g. an Administrator can kick/ban/timeout a Moderator or a
-# regular member, but NOT another Administrator, a Co-Owner, or the Owner.
-# Regular members (nobody, tier 0) can be moderated by anyone with command access.
+# regular member, but NOT another Administrator, a Co-Owner, the Owner, or
+# Lily. Regular members (nobody, tier 0) can be moderated by anyone with
+# command access. SUPER_USER_ID (the hardcoded bot owner) sits above
+# everyone, including Lily -- it's a separate, more fundamental bypass, not
+# part of this role-based hierarchy.
 # ---------------------------------------------------------------------------
+TIER_LILY = 5
 TIER_OWNER = 4
 TIER_COOWNER = 3
 TIER_ADMIN = 2
@@ -22,6 +26,7 @@ TIER_MOD = 1
 TOP_TIERS = {TIER_OWNER, TIER_COOWNER}  # Owner and Co-Owner can moderate each other, as peers -- see can_moderate()
 
 ROLE_TIERS = {
+    1543815224900194375: TIER_LILY,      # Lily -- outranks everyone below, including Owner and Co-Owner
     1543457938478473348: TIER_OWNER,     # Owner
     1543457941485658132: TIER_COOWNER,   # Co-Owner
     1543460074259882034: TIER_ADMIN,     # Administrator
@@ -31,7 +36,9 @@ ROLE_TIERS = {
 
 def get_tier(member: discord.Member) -> int:
     if member.id == SUPER_USER_ID:
-        return TIER_OWNER + 1  # always outranks everyone -- can moderate anyone, including other Owners
+        return TIER_LILY + 1  # always outranks everyone, including Lily
+    if db.is_superadmin(member.id):
+        return TIER_OWNER  # dynamically-added via /superadmin add -- same standing as the Owner role, peers with Co-Owner too
     return max((ROLE_TIERS.get(role.id, 0) for role in member.roles), default=0)
 
 
