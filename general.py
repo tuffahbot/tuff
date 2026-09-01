@@ -50,6 +50,7 @@ HELP_SECTIONS = {
         "/roleremove <member> <role> — [admin] take a role away",
         "/roleall <role> [include_bots] — [admin] give a role to every member in the server",
         "/rolecreate <name> [color] [hoist] [mentionable] — [admin] create a new role",
+        "/roleedit <role> [name] [color] [hoist] [mentionable] — [admin] change an existing role's name/color/hoist/mentionable",
     ],
     "🎈 Fun": [
         "/ship <member> [member2] — see how compatible two people are (defaults to you)",
