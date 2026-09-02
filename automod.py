@@ -1,5 +1,4 @@
 import re
-import time
 from collections import deque
 
 import discord
@@ -11,7 +10,7 @@ from logsutil import send_log
 from permissions import SUPER_USER_ID
 
 SPAM_MESSAGE_THRESHOLD = 5   # this many messages...
-SPAM_WINDOW_SECONDS = 5      # ...within this many seconds gets the latest one deleted
+SPAM_WINDOW_SECONDS = 5      # ...within this many seconds gets the whole burst deleted
 
 
 class AutoMod(commands.Cog):
@@ -38,23 +37,32 @@ class AutoMod(commands.Cog):
 
     async def _check_spam(self, message: discord.Message) -> bool:
         """Flood/spam detection: SPAM_MESSAGE_THRESHOLD messages within
-        SPAM_WINDOW_SECONDS from the same person gets the latest one deleted.
-        Returns True if this message was handled as spam (so on_message
-        knows not to also run the word filter on an already-deleted message)."""
+        SPAM_WINDOW_SECONDS from the same person gets the WHOLE burst
+        deleted, not just the message that tipped it over. Returns True if
+        this message was handled as spam (so on_message knows not to also
+        run the word filter on an already-deleted message)."""
         key = (message.guild.id, message.author.id)
         history = self._recent_messages.setdefault(key, deque(maxlen=SPAM_MESSAGE_THRESHOLD))
-        now = time.monotonic()
-        history.append(now)
+        history.append(message)
 
-        if len(history) < SPAM_MESSAGE_THRESHOLD or now - history[0] > SPAM_WINDOW_SECONDS:
+        if len(history) < SPAM_MESSAGE_THRESHOLD:
+            return False
+        elapsed = (message.created_at - history[0].created_at).total_seconds()
+        if elapsed > SPAM_WINDOW_SECONDS:
             return False
 
+        burst = list(history)
         history.clear()  # reset so this doesn't re-trigger on every single message until they actually slow down
 
         try:
-            await message.delete()
+            await message.channel.delete_messages(burst)
         except discord.HTTPException:
-            pass
+            # bulk delete can fail (e.g. a message already gone) -- fall back to one-by-one
+            for m in burst:
+                try:
+                    await m.delete()
+                except discord.HTTPException:
+                    pass
 
         try:
             await message.channel.send(f"🛡️ {message.author.mention}, slow down -- that looked like spam.", delete_after=6)
@@ -67,6 +75,7 @@ class AutoMod(commands.Cog):
                 f"**Author:** {message.author.mention}\n"
                 f"**Channel:** {message.channel.mention}\n"
                 f"**Trigger:** {SPAM_MESSAGE_THRESHOLD} messages within {SPAM_WINDOW_SECONDS}s\n"
+                f"**Messages deleted:** {len(burst)}\n"
                 f"**Last message:** {message.content[:1000] or '*(no text content)*'}"
             ),
             color=discord.Color.red(),
