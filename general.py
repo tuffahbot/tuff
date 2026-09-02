@@ -8,8 +8,9 @@ from suggestions import SuggestionPanelView
 HELP_SECTIONS = {
     "🎵 Music": [
         "/play <query> — play a song by name or URL",
-        "/pause, /resume, /skip, /stop, /leave",
-        "/queue, /nowplaying, /volume <0-100>, /loop, /autoplay",
+        "/pause, /resume, /stop, /leave",
+        "/skip — vote to skip (needs 2 votes from people in the voice channel)",
+        "/queue, /queueremove <position>, /nowplaying, /volume <0-100>, /loop, /autoplay",
         "Every song gets a Now Playing panel with pause/skip/stop/queue buttons",
     ],
     "📈 Leveling": [
