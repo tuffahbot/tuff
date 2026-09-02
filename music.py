@@ -48,6 +48,8 @@ FFMPEG_OPTS = {
     "options": "-vn",
 }
 
+SKIP_VOTES_REQUIRED = 2  # distinct people (in the bot's voice channel) needed to actually skip
+
 # --- Spotify link support -----------------------------------------------
 # Spotify's API never gives out actual audio (it's DRM-protected), so this
 # only reads the track names off a Spotify link via Spotify's API, then
@@ -298,12 +300,13 @@ class MusicControlView(discord.ui.View):
 
     @discord.ui.button(emoji="⏭️", label="Skip", style=discord.ButtonStyle.secondary, custom_id="music_skip")
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cog = interaction.client.get_cog("Music")
         state = self._get_state(interaction)
-        if state and state.voice_client and (state.voice_client.is_playing() or state.voice_client.is_paused()):
-            state.voice_client.stop()  # triggers play_next via the 'after' callback
-            await interaction.response.send_message("⏭️ Skipped.", ephemeral=True)
-        else:
-            await interaction.response.send_message("Nothing to skip.", ephemeral=True)
+        if not state or cog is None:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+        message, _skipped = await cog._register_skip_vote(interaction, state)
+        await interaction.response.send_message(message, ephemeral=True)
 
     @discord.ui.button(emoji="⏹️", label="Stop", style=discord.ButtonStyle.danger, custom_id="music_stop")
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -350,11 +353,14 @@ class GuildMusicState:
         self.volume = 0.5
         self.loop_song = False
         self.autoplay = True  # keep playing related songs once the queue runs out
+        self.skip_votes: set[int] = set()  # user IDs who've voted to skip the CURRENT song -- reset every time the song changes
         self.text_channel: discord.abc.Messageable | None = None  # set by /play, used for announcements/errors
         self._prefetched_song: Song | None = None  # autoplay pick resolved ahead of time, for an instant transition
         self._prefetching = False
 
     def play_next(self, error=None):
+        self.skip_votes.clear()  # fresh vote count for whatever plays next, regardless of how we got here
+
         if error:
             print(f"Player error: {error}")
             if self.text_channel:
@@ -527,6 +533,23 @@ class Music(commands.Cog):
 
         return state
 
+    async def _register_skip_vote(self, interaction: discord.Interaction, state: "GuildMusicState") -> tuple[str, bool]:
+        """Returns (message, skipped)."""
+        if not state.voice_client or not (state.voice_client.is_playing() or state.voice_client.is_paused()):
+            return "Nothing to skip.", False
+
+        if interaction.user.voice is None or state.voice_client.channel != interaction.user.voice.channel:
+            return "You need to be in the voice channel to vote to skip.", False
+
+        if interaction.user.id in state.skip_votes:
+            return f"You already voted. {len(state.skip_votes)}/{SKIP_VOTES_REQUIRED} vote(s) so far.", False
+
+        state.skip_votes.add(interaction.user.id)
+        if len(state.skip_votes) >= SKIP_VOTES_REQUIRED:
+            state.voice_client.stop()  # triggers play_next via the 'after' callback, which also resets votes for the next song
+            return "⏭️ Skipped.", True
+        return f"🗳️ Vote to skip registered ({len(state.skip_votes)}/{SKIP_VOTES_REQUIRED}).", False
+
     @app_commands.command(name="play", description="Queue up a song — search by name or drop a link")
     @app_commands.describe(query="Name it or paste a link (YouTube, SoundCloud, or Spotify track/album/playlist)")
     async def play(self, interaction: discord.Interaction, query: str):
@@ -616,14 +639,14 @@ class Music(commands.Cog):
         else:
             await interaction.response.send_message("Nothing is paused.", ephemeral=True)
 
-    @app_commands.command(name="skip", description="Skip to the next one")
+    @app_commands.command(name="skip", description="Vote to skip to the next song (needs 2 votes from people in the voice channel)")
     async def skip(self, interaction: discord.Interaction):
         state = self.get_state(interaction.guild)
-        if state.voice_client and (state.voice_client.is_playing() or state.voice_client.is_paused()):
-            state.voice_client.stop()  # triggers play_next via the 'after' callback
-            await interaction.response.send_message(embed=music_embed("⏭️ Skipped."))
+        message, skipped = await self._register_skip_vote(interaction, state)
+        if skipped:
+            await interaction.response.send_message(embed=music_embed(message))
         else:
-            await interaction.response.send_message("Nothing to skip.", ephemeral=True)
+            await interaction.response.send_message(message, ephemeral=True)
 
     @app_commands.command(name="stop", description="Kill the music and wipe the queue")
     async def stop(self, interaction: discord.Interaction):
@@ -671,6 +694,21 @@ class Music(commands.Cog):
             if len(state.queue) > 10:
                 embed.set_footer(text=f"...and {len(state.queue) - 10} more")
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="queueremove", description="Remove a song from the queue by its position")
+    @app_commands.describe(position="Position shown in /queue -- 1 is next up")
+    async def queueremove(self, interaction: discord.Interaction, position: app_commands.Range[int, 1, 9999]):
+        state = self.get_state(interaction.guild)
+        index = position - 1
+        if index < 0 or index >= len(state.queue):
+            await interaction.response.send_message(
+                f"There's no song at position {position} -- the queue only has {len(state.queue)} song(s). Check `/queue` for current positions.",
+                ephemeral=True,
+            )
+            return
+        removed = state.queue.pop(index)
+        who = "🔀 Autoplay" if removed.autoplay else removed.requester.mention
+        await interaction.response.send_message(embed=music_embed(f"🗑️ Removed **{removed.title}** ({who}) from the queue."))
 
     @app_commands.command(name="nowplaying", description="What's playing right now")
     async def nowplaying(self, interaction: discord.Interaction):
