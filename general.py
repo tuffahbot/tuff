@@ -64,7 +64,7 @@ HELP_SECTIONS = {
     "🛡️ Moderation (mod role or matching Discord permission required)": [
         "/warn, /warnings, /clearwarnings, /removewarning",
         "/kick, /ban, /unban",
-        "/timeout, /untimeout",
+        "/timeout <member> <minutes|permanent>, /untimeout — permanent auto-renews every 28 days (Discord's own hard cap per timeout) until removed",
         "/purge <amount, max 1000>, /slowmode <seconds>",
         "/lock [channel] [reason], /unlock [channel] — stop/allow regular members sending messages (defaults to the current channel)",
         "Mod actions are logged to the logs channel instead of posting in chat",
@@ -74,7 +74,7 @@ HELP_SECTIONS = {
         "/automod addword <word>, /automod removeword <word> — [admin] manage the blocked words",
         "/automod words — see what's currently filtered",
         "Blocked messages are deleted automatically; staff (Manage Messages) are exempt",
-        "5 messages within 5 seconds from the same person gets the latest one deleted as spam",
+        "5 messages within 5 seconds from the same person gets the whole burst deleted as spam",
     ],
     "📋 Mod Applications": [
         "/modapp channel <#channel> — [admin] set where finished applications get posted",
