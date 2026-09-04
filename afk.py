@@ -82,7 +82,13 @@ class AFK(commands.Cog):
                 notices.append(f"💤 {user.mention} is AFK ({ago}): {reason}")
             if notices:
                 try:
-                    await message.channel.send("\n".join(notices))
+                    # allowed_mentions=none() is the fix here -- without it, anything
+                    # someone put in their AFK reason (@everyone, a role, another
+                    # user) fires as a REAL ping the moment someone mentions them.
+                    # The AFK user's own mention above still renders/highlights
+                    # normally; this only stops it (and the reason text) from
+                    # actually notifying anyone.
+                    await message.channel.send("\n".join(notices), allowed_mentions=discord.AllowedMentions.none())
                 except discord.Forbidden:
                     pass
 
@@ -91,13 +97,13 @@ class AFK(commands.Cog):
     async def afk(self, interaction: discord.Interaction, reason: str = None):
         reason = reason[:MAX_REASON_LENGTH] if reason else None
         text = await self._go_afk(interaction.user, reason)
-        await interaction.response.send_message(text)
+        await interaction.response.send_message(text, allowed_mentions=discord.AllowedMentions.none())
 
     @commands.command(name="afk")
     async def afk_text(self, ctx: commands.Context, *, reason: str = None):
         reason = reason[:MAX_REASON_LENGTH] if reason else None
         text = await self._go_afk(ctx.author, reason)
-        await ctx.reply(text, mention_author=False)
+        await ctx.reply(text, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         if not interaction.response.is_done():
