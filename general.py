@@ -6,6 +6,9 @@ from permissions import SUPER_USER_ID as AUTHORIZED_SAY_USER_ID
 from suggestions import SuggestionPanelView
 
 HELP_SECTIONS = {
+    "🆘 Crisis Support": [
+        "/kms — free, confidential crisis support resources (988, Crisis Text Line, The Trevor Project, and international options) -- posted here and DMed to you",
+    ],
     "🎵 Music": [
         "/play <query> — play a song by name or URL",
         "/pause, /resume, /stop, /leave",
