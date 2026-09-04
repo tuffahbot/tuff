@@ -50,6 +50,7 @@ STARTUP_EXTENSIONS = (
     "spam67",
     "xpboost",
     "superadmin",
+    "crisis",
 )
 
 
